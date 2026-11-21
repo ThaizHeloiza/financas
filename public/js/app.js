@@ -876,27 +876,40 @@ const money=v=>v||v===0?brl2.format(v):'';
 
 function lancForm(t){
   const isNew=!t; t=t||{tipo:'despesa',forma:'pix',quem:'casal',cat:'',parcelas:1,data:month===curYM()?today():month+'-01'};
-  const n=parseInt(t.parcelas)||1;
+  const n=parseInt(t.parcelas)||1, freq0=n>1?'parc':'unica', d0=t.data||today(), fat0=esc(t.mesFatura||d0.slice(0,7));
   const body=`
     <div class="seg2" role="radiogroup" aria-label="Tipo"><label><input type="radio" name="tipo" value="despesa" ${t.tipo!=='receita'?'checked':''}>Gasto</label><label><input type="radio" name="tipo" value="receita" ${t.tipo==='receita'?'checked':''}>Entrada extra</label></div>
-    <label>Descrição<input id="f-desc" name="desc" value="${esc(t.desc||'')}" placeholder="Ex.: Mercado, iFood, Geladeira" autocomplete="off"></label>
+    <label>Descrição<input id="f-desc" name="desc" value="${esc(t.desc||'')}" placeholder="Ex.: Mercado, iFood, Academia" autocomplete="off"></label>
     <div class="hint" id="f-guess"></div>
-    <div class="two"><label>Valor (R$)<input id="f-valor" name="valor" inputmode="decimal" value="${money(n>1&&!isNew?num(t.valor)/n:t.valor)}" placeholder="0,00"></label><label>Data<input id="f-data" name="data" type="date" value="${esc(t.data||today())}"></label></div>
+    <div class="two"><label>Valor (R$)<input id="f-valor" name="valor" inputmode="decimal" value="${money(n>1&&!isNew?num(t.valor)/n:t.valor)}" placeholder="0,00"></label><label>Data<input id="f-data" name="data" type="date" value="${esc(d0)}"></label></div>
     <div class="two" data-only="despesa"><label>Categoria<select id="f-cat" name="cat">${catOpts(t.cat||'outros')}</select></label><label>Quem<select id="f-quem" name="quem">${opts(PESSOAS,t.quem||'casal')}</select></label></div>
     <div data-only="receita" hidden><label>De quem<select id="f-quemr" name="quemr">${opts(PESSOAS,t.quem||'casal')}</select></label></div>
-    <label data-only="despesa">Forma de pagamento<select id="f-forma" name="forma">${opts(FORMAS,t.forma||'pix')}</select></label>
-    <div class="two" data-only="credito"><label>Parcelas<select id="f-parc" name="parcelas">${[...Array(24)].map((_,i)=>`<option value="${i+1}" ${i+1===n?'selected':''}>${i===0?'À vista':(i+1)+'x'}</option>`).join('')}</select></label><label>1ª fatura em<input id="f-fat" name="mesFatura" type="month" value="${esc(t.mesFatura||(t.data||today()).slice(0,7))}"></label></div>
-    <div class="hint" id="f-parc-hint" data-only="credito"></div>
+    <div class="two" data-only="despesa"><label>Forma de pagamento<select id="f-forma" name="forma">${opts(FORMAS,t.forma||'pix')}</select></label><label>Como se repete<select id="f-freq" name="freq">${opts({unica:'Só esta vez',parc:'Parcelado',fixa:'Fixo todo mês'},freq0)}</select></label></div>
+    <div class="two" data-only="parc"><label>Parcelas<select id="f-parc" name="parcelas">${[...Array(23)].map((_,i)=>`<option value="${i+2}" ${i+2===n?'selected':''}>${i+2}x</option>`).join('')}</select></label><label>1ª fatura em<input id="f-fat" name="mesFatura" type="month" value="${fat0}"></label></div>
+    <label data-only="fatura">Entra na fatura de<input id="f-fat1" name="mesFatura1" type="month" value="${fat0}"></label>
+    <label data-only="fixa">Dia do vencimento<input id="f-dia" name="dia" type="number" min="1" max="31" inputmode="numeric" value="${+d0.slice(8,10)}"></label>
+    <div class="hint" id="f-parc-hint"></div>
     ${!isNew&&n>1&&t.forma==='credito'?parcTimeline(t):''}`;
   const del = isNew?'':`<button type="button" class="btn danger" data-act="del-lanc" data-id="${esc(t.id)}">Excluir</button>`;
   openSheet(isNew?'Novo lançamento':'Editar lançamento',body,async fd=>{
-    const tipo=fd.get('tipo'); const parcelas=tipo==='receita'||fd.get('forma')!=='credito'?1:parseInt(fd.get('parcelas'))||1;
+    const tipo=fd.get('tipo'), freq=tipo==='despesa'?fd.get('freq'):'unica', forma=tipo==='receita'?'pix':fd.get('forma');
     const v=parseMoney(fd.get('valor')); if(!(v>0)) return 'Informe um valor maior que zero.';
     const data=fd.get('data')||today();
     const cat=tipo==='receita'?'renda':fd.get('cat');
-    const o={...(isNew?{}:t),tipo,desc:(fd.get('desc')||'').trim()||catName(cat),valor:Math.round(v*parcelas*100)/100,data,cat,
-      quem:tipo==='receita'?fd.get('quemr'):fd.get('quem'),forma:tipo==='receita'?'pix':fd.get('forma'),parcelas,
-      mesFatura:tipo!=='receita'&&fd.get('forma')==='credito'?(fd.get('mesFatura')||data.slice(0,7)):data.slice(0,7)};
+    const desc=(fd.get('desc')||'').trim()||catName(cat);
+    if(freq==='fixa'){
+      const dia=Math.min(31,Math.max(1,parseInt(fd.get('dia'))||+data.slice(8,10))), m0=data.slice(0,7), pagas={};
+      if(forma!=='credito'&&data<=today()) pagas[m0]=data;
+      const f={nome:desc,valor:v,cat,quem:fd.get('quem'),dia,inicio:m0,fim:'',ativo:true,forma,pagas,criado:Date.now()};
+      let ok=await safe(()=>saveDoc('fixas',f));
+      if(ok&&!isNew) ok=await safe(()=>delDoc('lanc',t.id));
+      if(ok) toast(`Conta fixa criada: entra todo mês, vence dia ${dia}. Fica em Contas.`);
+      return ok;
+    }
+    const parcelas=freq==='parc'?(parseInt(fd.get('parcelas'))||2):1;
+    const mesFatura=forma==='credito'?((freq==='parc'?fd.get('mesFatura'):fd.get('mesFatura1'))||data.slice(0,7)):data.slice(0,7);
+    const o={...(isNew?{}:t),tipo,desc,valor:Math.round(v*parcelas*100)/100,data,cat,
+      quem:tipo==='receita'?fd.get('quemr'):fd.get('quem'),forma,parcelas,mesFatura};
     if(isNew) o.criado=Date.now();
     const ok=await safe(()=>saveDoc('lanc',o));
     if(ok){ toast(isNew?'Lançado.':'Lançamento atualizado.'); if(isNew&&data.slice(0,7)!==month&&parcelas===1) toast(`Lançado em ${labelLong(data.slice(0,7))}.`); }
@@ -904,15 +917,27 @@ function lancForm(t){
   },del);
   const form=$('#sheetForm'); let catTouched=!isNew;
   const sync=()=>{
-    const tipo=form.querySelector('[name=tipo]:checked').value, forma=form.forma.value;
-    form.querySelectorAll('[data-only]').forEach(el=>{const k=el.dataset.only; el.hidden = k==='despesa'?tipo!=='despesa':k==='receita'?tipo!=='receita':(tipo!=='despesa'||forma!=='credito');});
-    const n=parseInt(form.parcelas.value)||1, v=parseMoney(form.valor.value);
-    const h=$('#f-parc-hint'); if(h) h.innerHTML = n>1&&v>0 ? `Valor da <b>parcela</b>. Total: <b>${fmt(v*n)}</b> em ${n}x, de ${esc(labelShort(form.mesFatura.value||month))} a ${esc(labelShort(addM(form.mesFatura.value||month,n-1)))}.` : (forma==='credito'?'À vista no cartão: entra no mês da fatura escolhida.':'');
-    const lab=form.valor.closest('label'); lab.firstChild.textContent = n>1&&forma==='credito'&&tipo==='despesa' ? 'Valor da parcela (R$)' : 'Valor (R$)';
+    const tipo=form.querySelector('[name=tipo]:checked').value, forma=form.forma.value, freq=form.freq.value, desp=tipo==='despesa';
+    const vis={despesa:desp,receita:!desp,parc:desp&&freq==='parc',fatura:desp&&freq==='unica'&&forma==='credito',fixa:desp&&freq==='fixa'};
+    form.querySelectorAll('[data-only]').forEach(el=>{el.hidden=!vis[el.dataset.only];});
+    const n=parseInt(form.parcelas.value)||2, v=parseMoney(form.valor.value), data=form.data.value||today(), h=$('#f-parc-hint');
+    let txt='';
+    if(vis.parc&&v>0) txt=`Valor da <b>parcela</b>. Total: <b>${fmt(v*n)}</b> em ${n}x, de ${esc(labelShort(form.mesFatura.value||month))} a ${esc(labelShort(addM(form.mesFatura.value||month,n-1)))}.`;
+    else if(vis.fatura) txt='À vista no cartão: entra na fatura escolhida.';
+    else if(vis.fixa) txt=`Vai para <b>Contas fixas</b> e entra todo mês a partir de ${esc(labelShort(data.slice(0,7)))}, vencendo no dia ${esc(form.dia.value||'—')}.${forma!=='credito'&&data<=today()?' Este mês já fica marcado como pago.':''}`;
+    h.innerHTML=txt;
+    form.valor.closest('label').firstChild.textContent = vis.parc?'Valor da parcela (R$)':vis.fixa?'Valor por mês (R$)':'Valor (R$)';
   };
-  form.addEventListener('change',e=>{ if(e.target.name==='cat') catTouched=true; if(e.target.name==='data'&&isNew) form.mesFatura.value=e.target.value.slice(0,7); sync(); });
+  form.addEventListener('change',e=>{
+    const nm=e.target.name;
+    if(nm==='cat') catTouched=true;
+    if(nm==='freq'&&e.target.value==='parc') form.forma.value='credito';
+    if(nm==='forma'&&e.target.value!=='credito'&&form.freq.value==='parc') form.freq.value='unica';
+    if(nm==='data'&&isNew){ const d=e.target.value; form.mesFatura.value=d.slice(0,7); form.mesFatura1.value=d.slice(0,7); form.dia.value=+d.slice(8,10)||form.dia.value; }
+    sync();
+  });
   form.addEventListener('input',e=>{
-    if(e.target.name==='valor') sync();
+    if(e.target.name==='valor'||e.target.name==='dia') sync();
     if(e.target.name==='desc'&&!catTouched){
       const d=e.target.value.trim().toLowerCase(); if(d.length<3){$('#f-guess').textContent='';return;}
       const prev=[...S.lanc].reverse().find(x=>x.tipo!=='receita'&&(x.desc||'').toLowerCase()===d);
@@ -930,12 +955,13 @@ function fixaForm(f){
     <label>Nome<input name="nome" value="${esc(f.nome)}" placeholder="Ex.: Aluguel, Luz, Internet" autocomplete="off"></label>
     <div class="two"><label>Valor mensal (R$)<input name="valor" inputmode="decimal" value="${money(f.valor)}" placeholder="0,00"></label><label>Dia do vencimento<input name="dia" type="number" min="1" max="31" inputmode="numeric" value="${esc(f.dia||'')}"></label></div>
     <div class="two"><label>Categoria<select name="cat">${catOpts(f.cat)}</select></label><label>Quem paga<select name="quem">${opts(PESSOAS,f.quem||'casal')}</select></label></div>
+    <label>Forma de pagamento<select name="forma">${opts(FORMAS,f.forma||'pix')}</select></label>
     <div class="two"><label>Começa em<input name="inicio" type="month" value="${esc(f.inicio||month)}"></label><label>Termina em (opcional)<input name="fim" type="month" value="${esc(f.fim||'')}"></label></div>
     <div class="hint">Contas de valor variável (como luz): coloquem a média e ajustem quando a conta chegar.</div>`,
   async fd=>{
     const v=parseMoney(fd.get('valor')); if(!(v>0)) return 'Informe o valor mensal.';
     if(!(fd.get('nome')||'').trim()) return 'Dê um nome para a conta.';
-    const o={...(isNew?{pagas:{}}:f),nome:fd.get('nome').trim(),valor:v,dia:parseInt(fd.get('dia'))||'',cat:fd.get('cat'),quem:fd.get('quem'),inicio:fd.get('inicio')||month,fim:fd.get('fim')||'',ativo:true};
+    const o={...(isNew?{pagas:{}}:f),nome:fd.get('nome').trim(),valor:v,dia:parseInt(fd.get('dia'))||'',cat:fd.get('cat'),quem:fd.get('quem'),forma:fd.get('forma')||'pix',inicio:fd.get('inicio')||month,fim:fd.get('fim')||'',ativo:true};
     const ok=await safe(()=>saveDoc('fixas',o)); if(ok) toast('Conta salva.'); return ok;
   }, isNew?'':`<button type="button" class="btn danger" data-act="del-fixa" data-id="${esc(f.id)}">Excluir</button>`);
 }
