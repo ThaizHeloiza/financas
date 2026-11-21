@@ -12,6 +12,12 @@ create table if not exists public.docs (
   primary key (col, id)
 );
 
+-- Permite que usuários logados usem a tabela pela API (as regras abaixo continuam valendo).
+-- Necessário quando o projeto foi criado sem "conceder acesso à API para novas tabelas".
+grant usage on schema public to authenticated;
+grant select, insert, update, delete on public.docs to authenticated;
+revoke all on public.docs from anon;
+
 -- Segurança: só usuários logados leem e escrevem.
 -- Como o cadastro público fica DESLIGADO (ver README), só as contas criadas
 -- por vocês no painel conseguem entrar.
