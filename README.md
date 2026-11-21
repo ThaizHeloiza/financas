@@ -91,7 +91,7 @@ Em **Ajustes › Dados**, use **Baixar backup** (ou **Copiar backup**) no lugar 
 
 ## Créditos
 
-Projeto desenvolvido com apoio de IA (Claude, da Anthropic) na escrita do código. As funcionalidades foram definidas e testadas a partir do uso real no dia a dia do casal.
+Projeto de [ThaizHeloiza](https://github.com/ThaizHeloiza). Código escrito com apoio de IA (Claude, da Anthropic); as funcionalidades foram definidas e testadas a partir do uso real no dia a dia do casal.
 
 Licença MIT.
 
