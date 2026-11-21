@@ -75,12 +75,12 @@ function holidays(y){
 function isBiz(d,sab){const w=d.getDay(); if(w===0||(w===6&&!sab)) return false; return !holidays(d.getFullYear()).has(ymd(d));}
 function nthBizDay(m,n,sab){const [y,mo]=m.split('-').map(Number);let c=0;for(let d=1;d<=daysIn(m);d++){const dt=new Date(y,mo-1,d);if(isBiz(dt,sab)&&++c===n) return ymd(dt);}return m+'-'+pad(daysIn(m));}
 function fixedDayAdj(m,day){const [y,mo]=m.split('-').map(Number);const dt=new Date(y,mo-1,Math.min(Math.max(1,day),daysIn(m)));let g=0;while(!isBiz(dt,false)&&g++<10) dt.setDate(dt.getDate()-1);return ymd(dt);}
-function payDate(f,m,sab){return f.quando==='dia'?fixedDayAdj(m,num(f.dia)||20):nthBizDay(m,5,sab??(S.cfg.sabadoUtil!==false));}
+function payDate(f,m,sab){return f.quando==='dia'?fixedDayAdj(m,num(f.dia)||20):nthBizDay(m,5,sab??(S.cfg.sabadoUtil===true));}
 const whenTxt = f=>f.quando==='dia'?'todo dia '+(num(f.dia)||20):'5º dia útil';
 function paidDefault(m,day){const cm=curYM(); if(m>=cm) return today(); return m+'-'+pad(Math.min(Math.max(1,day||daysIn(m)),daysIn(m)));}
 
 /* ---------- estado ---------- */
-const blank = ()=>({cfg:{fontes:[],salarios:{},sabadoUtil:true,saldoInicial:0,inicio:'',limites:{}},lanc:[],fixas:[],metas:[],aportes:[],receb:[]});
+const blank = ()=>({cfg:{fontes:[],salarios:{},sabadoUtil:false,saldoInicial:0,inicio:'',limites:{}},lanc:[],fixas:[],metas:[],aportes:[],receb:[]});
 let real = blank(), demo = null, S = real;
 let mode = 'loading', baseMode = 'local', cfgExists = false;
 let canWrite = true, loadNote = '';
@@ -127,9 +127,10 @@ function startMonth(){
 function summary(m){
   if(memo.has(m)) return memo.get(m);
   const it=monthItems(m);
-  const s={m,extra:0,fixa:0,parc:0,var:0,cat:{},quem:{},ess:0,est:0,items:it,rec:[],pend:[],recebido:0,prevPend:0};
+  const s={m,extra:0,fixa:0,parc:0,var:0,cat:{},quem:{},ess:0,est:0,items:it,rec:[],pend:[],late:[],recebido:0,prevPend:0};
   const fs=fontes(), st=startMonth();
-  for(const f of fs){ const r=S.receb.find(x=>x.fonte===f.id&&x.mes===m); if(r){s.rec.push({f,r});s.recebido+=num(r.valor);} else if(m>=st){s.pend.push(f);s.prevPend+=num(f.valor);} }
+  const cmS=curYM(), hojeS=today();
+  for(const f of fs){ const r=S.receb.find(x=>x.fonte===f.id&&x.mes===m); if(r){s.rec.push({f,r});s.recebido+=num(r.valor);} else if(m>=st){ const d=payDate(f,m); if(m>cmS||(m===cmS&&d>=hojeS)){s.pend.push(f);s.prevPend+=num(f.valor);} else s.late.push(f); } }
   for(const r of S.receb) if(r.mes===m&&!fs.some(f=>f.id===r.fonte)){ s.rec.push({f:{id:r.fonte,nome:r.nome||'Salário',quem:r.quem||'casal'},r}); s.recebido+=num(r.valor); }
   for(const x of it){
     if(x.k==='rec'){s.extra+=x.v;continue;}
@@ -146,11 +147,46 @@ function summary(m){
 }
 /* sobra usada no saldo: em meses futuros desconta o dia a dia médio ainda não lançado */
 function livreProj(p){const q=summary(p); return p>curYM()?q.livre-Math.max(0,planBase().var-q.var):q.livre;}
-/* saldo acumulado no fim do mês m: saldo inicial + sobras desde o mês de início */
+/* saldo: o saldo informado em Ajustes + o que entrou e saiu de verdade depois dele (extrato) */
+function saldoBase(){
+  const st=startMonth(), c=S.cfg;
+  if(c.saldoData) return {v:num(c.saldoInicial),d:c.saldoData,modo:c.saldoModo||'fim',em:num(c.saldoEm)};
+  return {v:num(c.saldoInicial),d:st+'-01',modo:'inicio',em:0};
+}
+function ledger(upto){
+  const key='led:'+upto; if(memo.has(key)) return memo.get(key);
+  const B=saldoBase(); let v=B.v;
+  const ok=(d,criado)=>!!d&&d<=upto&&(d>B.d||(d===B.d&&(B.modo==='inicio'||(B.modo==='agora'&&(!criado||num(criado)>B.em)))));
+  for(const r of S.receb) if(ok(r.data,r.criado)) v+=num(r.valor);
+  for(const t of S.lanc){
+    if(!t.data) continue;
+    if(t.tipo==='receita'){ if(ok(t.data,t.criado)) v+=num(t.valor); continue; }
+    if(t.forma==='credito'){ const n=Math.max(1,parseInt(t.parcelas)||1); for(const [m,p] of Object.entries(t.pagas||{})){ if(!p) continue; const d=typeof p==='string'&&p?p:m+'-10'; if(ok(d)) v-=num(t.valor)/n; } }
+    else if(ok(t.data,t.criado)) v-=num(t.valor);
+  }
+  for(const f of S.fixas) for(const [m,p] of Object.entries(f.pagas||{})){ if(!p) continue; const d=typeof p==='string'&&p?p:m+'-'+pad(Math.min(num(f.dia)||1,daysIn(m))); if(ok(d)) v-=num(f.valor); }
+  for(const a of S.aportes){ const d=a.criado?ymd(new Date(num(a.criado))):(a.mes||'')+'-01'; if(ok(d,a.criado)) v-=num(a.valor); }
+  memo.set(key,v); return v;
+}
+/* previsto para o fim do mês atual: saldo de hoje + o que ainda vai entrar − o que ainda falta pagar */
+function previstoFim(){
+  if(memo.has('pf')) return memo.get('pf');
+  const cm=curYM(), s=summary(cm), hoje=today(), B=saldoBase();
+  let inn=s.prevPend, out=0;
+  for(const x of s.items){
+    if(x.k==='rec'){ if(x.t.data>hoje) inn+=x.v; continue; }
+    if(x.k==='fixa'){ if(x.f.pagas?.[cm]) continue; const due=cm+'-'+pad(Math.min(num(x.f.dia)||daysIn(cm),daysIn(cm))); if(due<B.d) continue; out+=x.v; }
+    else if(x.t.forma==='credito'){ if(!x.t.pagas?.[cm]) out+=x.v; }
+    else if(x.t.data>hoje) out+=x.v;
+  }
+  const h=ledger(hoje), r={hoje:h,inn,out,fim:h+inn-out}; memo.set('pf',r); return r;
+}
 function saldoFinal(m){
   const key='saldo:'+m; if(memo.has(key)) return memo.get(key);
-  const st=startMonth(); let v=num(S.cfg.saldoInicial);
-  if(m>=st){ let p=st,g=0; while(p<=m&&g++<600){v+=livreProj(p);p=addM(p,1);} }
+  const cm=curYM(); let v;
+  if(m<cm) v=ledger(m+'-'+pad(daysIn(m)));
+  else if(m===cm) v=previstoFim().fim;
+  else v=saldoFinal(addM(m,-1))+livreProj(m);
   memo.set(key,v); return v;
 }
 /* data de pagamento de um item no mês (null = ainda não pago) */
@@ -276,7 +312,7 @@ function writeErr(e){
 async function safe(fn){ try{ await fn(); return true; }catch(e){ console.warn(e); writeErr(e); return false; } }
 
 /* ---------- carregamento ---------- */
-function normCfg(d){ d=d||{}; return {fontes:Array.isArray(d.fontes)?d.fontes:[],salarios:{...(d.salarios||{})},sabadoUtil:d.sabadoUtil!==false,saldoInicial:num(d.saldoInicial),inicio:d.inicio||'',nomes:{...(d.nomes||{})},limites:{...(d.limites||{})}}; }
+function normCfg(d){ d=d||{}; return {fontes:Array.isArray(d.fontes)?d.fontes:[],salarios:{...(d.salarios||{})},sabadoUtil:d.sabadoUtil===true,saldoInicial:num(d.saldoInicial),saldoData:d.saldoData||'',saldoEm:num(d.saldoEm),saldoModo:d.saldoModo||'',inicio:d.inicio||'',nomes:{...(d.nomes||{})},limites:{...(d.limites||{})}}; }
 async function init(){
   render();
   if(!HAS_CLOUD){ startLocal('Modo local: os dados ficam só neste navegador. Configure o Supabase (veja o README) para ter login e sincronizar entre aparelhos.'); return; }
@@ -411,7 +447,7 @@ function buildDemo(){
   const cm=curYM(), hoje=today(), dHoje=new Date().getDate(); let seed=11; const rnd=()=>{seed=(seed*16807)%2147483647;return (seed-1)/2147483646;};
   const pick=a=>a[Math.floor(rnd()*a.length)];
   const D={cfg:{fontes:[{id:'fr1',nome:'Salário',quem:'p1',quando:'5du',valor:4300},{id:'fr2',nome:'Adiantamento',quem:'p1',quando:'dia',dia:20,valor:2500},{id:'ft1',nome:'Salário',quem:'p2',quando:'5du',valor:5200}],
-    salarios:{},nomes:{p1:'Ana',p2:'Lucas'},sabadoUtil:true,saldoInicial:1500,inicio:addM(cm,-5),limites:{delivery:700,lazer:400,compras:500,mercado:1500}},lanc:[],fixas:[],metas:[],aportes:[],receb:[]};
+    salarios:{},nomes:{p1:'Ana',p2:'Lucas'},sabadoUtil:false,saldoInicial:1500,inicio:addM(cm,-5),limites:{delivery:700,lazer:400,compras:500,mercado:1500}},lanc:[],fixas:[],metas:[],aportes:[],receb:[]};
   let n=0; const id=p=>p+(++n);
   const ini=addM(cm,-6);
   D.fixas=[['Aluguel','moradia',2200,'casal',5],['Condomínio','moradia',480,'casal',10],['Luz','contas',230,'casal',15],
@@ -436,7 +472,7 @@ function buildDemo(){
     add('Roupas','compras',110,220,'p2','credito',c(1));
     add('Salão','beleza',80,70,'p2','pix',c(1));
     add('Pet shop','pets',130,60,'casal','pix',c(1));
-    for(const fo of D.cfg.fontes){ const d=payDate(fo,m,true); if(d>hoje) continue;
+    for(const fo of D.cfg.fontes){ const d=payDate(fo,m,false); if(d>hoje) continue;
       const v=fo.nome==='Salário'?fo.valor+Math.round((rnd()-.4)*25)*10:fo.valor;
       D.receb.push({id:fo.id+'_'+m,fonte:fo.id,quem:fo.quem,nome:fo.nome,mes:m,valor:v,data:d}); }
   }
@@ -526,9 +562,9 @@ function insights(s){
     const dH=new Date().getDate();
     const venc=s.items.filter(x=>x.k==='fixa'&&!x.f.pagas?.[cm]&&num(x.f.dia)&&num(x.f.dia)<dH);
     if(venc.length) out.push(['crit',`${venc.length===1?'1 conta fixa vencida':venc.length+' contas fixas vencidas'} sem marcar como paga: ${venc.slice(0,3).map(x=>x.f.nome).join(', ')} (${fmt0(venc.reduce((a,x)=>a+x.v,0))}).`]);
-    const pend=s.pend.filter(f=>payDate(f,cm)<=today());
-    if(pend.length) out.push(['warn',`A data de ${pend.map(f=>`${f.nome.toLowerCase()} de ${PESSOAS[f.quem]}`).join(' e ')} já passou. Toquem em “Recebi” e confirmem o valor que caiu.`]);
-  } else if(s.m<cm&&s.pend.length) out.push(['warn',`Há salário não registrado em ${labelShort(s.m)}; o cálculo usou o valor previsto (${fmt0(s.prevPend)}).`]);
+    const B0=saldoBase(), pend=s.late.filter(f=>payDate(f,cm)>B0.d);
+    if(pend.length) out.push(['warn',`A data de ${pend.map(f=>`${f.nome.toLowerCase()} de ${PESSOAS[f.quem]}`).join(' e ')} já passou e o valor não foi registrado, então não entra no saldo. Se caiu, toquem em “Recebi”.`]);
+  } else if(s.m<cm&&s.m>=startMonth()&&s.late.length) out.push(['warn',`Há salário não registrado em ${labelShort(s.m)}; ele não entrou no saldo daquele mês.`]);
   if(s.livre<-0.5&&s.renda>0) out.push(['crit',`Os gastos e o guardado passaram a renda em ${fmt0(-s.livre)} neste mês.`]);
   for(const [c,v] of Object.entries(s.cat)){
     const lim=num(S.cfg.limites?.[c]); if(!lim) continue; const t=v.fixa+v.parc+v.var;
@@ -567,10 +603,11 @@ function recebCard(s){
   const row=f=>{
     const r=s.rec.find(o=>o.f.id===f.id)?.r, d=payDate(f,month);
     if(r) return `<div class="row" style="cursor:default"><span class="check okbox" aria-hidden="true">✓</span><span class="main"><span class="t">${esc(PESSOAS[f.quem]||'')} · ${esc(f.nome)}</span><span class="s">Caiu em ${dm(r.data)}${Math.abs(num(r.valor)-num(f.valor))>=1?` · previsto ${fmt0(num(f.valor))}`:''}</span></span><button type="button" class="btn sm ghost num" data-act="receb" data-fonte="${esc(f.id)}" aria-label="Editar valor recebido">${fmt(num(r.valor))}</button></div>`;
-    const late=d<=today();
-    return `<div class="row" style="cursor:default"><span class="check" aria-hidden="true"></span><span class="main"><span class="t">${esc(PESSOAS[f.quem]||'')} · ${esc(f.nome)}</span><span class="s">${esc(whenTxt(f))} · ${dm(d)} · previsto ${fmt0(num(f.valor))}</span></span>${late?chip('warn',month<cm?'Não registrado':'Já caiu?'):''}<button type="button" class="btn sm" data-act="receb" data-fonte="${esc(f.id)}">Recebi</button></div>`;
+    const late=s.late.includes(f), antes=late&&d<=saldoBase().d;
+    const sub=antes?`caiu ${dm(d)} · já está no saldo`:late?`${dm(d)} · não registrado`:`${esc(whenTxt(f))} · cai ${dm(d)} · previsto ${fmt0(num(f.valor))}`;
+    return `<div class="row" style="cursor:default"><span class="check" aria-hidden="true"></span><span class="main"><span class="t">${esc(PESSOAS[f.quem]||'')} · ${esc(f.nome)}</span><span class="s">${sub}</span></span>${late&&!antes?chip('warn','Não registrado'):''}<button type="button" class="btn sm ${antes?'ghost':''}" data-act="receb" data-fonte="${esc(f.id)}">Recebi</button></div>`;
   };
-  return `<section class="card"><h2>Salários de ${esc(MESES[+month.slice(5)-1])}</h2><p class="lead">Recebido ${fmt0(s.recebido)} de ${fmt0(s.recebido+s.prevPend)}. Confirmem o valor que caiu em cada data.</p>
+  return `<section class="card"><h2>Salários de ${esc(MESES[+month.slice(5)-1])}</h2><p class="lead">${(()=>{ const nxt=month===cm&&!s.pend.length?fs.map(f=>payDate(f,addM(cm,1))).sort()[0]:''; return `Recebido ${fmt0(s.recebido)}${s.prevPend>0.5?` · ainda vai cair ${fmt0(s.prevPend)}`:''}.${nxt?` Próximo salário: <b>${dm(nxt)}</b>.`:' Confirmem o valor que caiu em cada data.'}`; })()}</p>
     <div class="list">${fs.map(row).join('')}</div>
     ${s.extra?`<div class="sumline" style="margin-top:10px"><span class="muted">Entradas extras no mês</span><b class="num pos">+${fmt(s.extra)}</b></div>`:''}
     <div class="btns"><button type="button" class="btn sm ghost" data-act="new-fonte">+ Adicionar outro salário ou data (ex.: dia 20)</button></div></section>`;
@@ -581,10 +618,13 @@ function vResumo(){
   const stripSegs=[['Fixas',s.fixa,'s1'],['Parcelas',s.parc,'s2'],['Dia a dia',s.var,'s3'],['Guardado',s.guardado,'s4']];
   const strip = (s.renda||s.gastos) ? `<div class="strip" role="img" aria-label="Divisão da renda do mês">${stripSegs.filter(x=>x[1]>0.004).map(([l,v,c])=>`<span class="seg" style="flex:${v.toFixed(2)} 0 0;background:var(--${c})" data-tip="${esc(`${l}: ${fmt(v)}${s.renda?` (${pct(v/s.renda)} da renda)`:''}`)}"></span>`).join('')}${livre>0.5?`<span class="seg hatch" style="flex:${livre.toFixed(2)} 0 0" data-tip="${esc(`Sobra: ${fmt(livre)} (${pct(livre/(s.renda||1))} da renda)`)}"></span>`:''}</div>
     <div class="legend">${stripSegs.map(([l,v,c])=>`<span class="li"><span class="sw" style="background:var(--${c})"></span>${l} <b class="num">${fmt0(v)}</b></span>`).join('')}<span class="li"><span class="sw hatch" style="border:1px solid var(--line)"></span>Sobra <b class="num">${fmt0(livre)}</b></span></div>
-    ${s.livre<-0.5?`<div class="over">${chip('crit','Faltou dinheiro')} Gastos e guardado passaram a renda em <b class="num">${fmt0(-s.livre)}</b>.</div>`:''}`
+    ${s.livre<-0.5&&!s.late.length?`<div class="over">${chip('crit','Faltou dinheiro')} Gastos e guardado passaram a renda em <b class="num">${fmt0(-s.livre)}</b>.</div>`:''}`
     : `<div class="empty" style="padding:8px 0;text-align:left">Comecem cadastrando os salários e as datas em Ajustes e lançando os gastos com o botão <b>+ Lançar</b>.</div>`;
-  const ant=saldoFinal(addM(month,-1)), fin=saldoFinal(month), lp=livreProj(month), futVar=lp<s.livre-0.5;
-  const saldoBox = month>=st ? `<a class="saldo" href="#historico"><span>Saldo acumulado no fim do mês${month>cm||prev?' (previsto)':''}<br><span class="muted" style="font-size:12.5px">${month===st&&!num(S.cfg.saldoInicial)?'Primeiro mês do controle':`Veio de antes ${fmt0(ant)}`} ${lp>=0?'+ sobra':'− falta'} ${fmt0(Math.abs(lp))} ›</span></span><b class="num ${fin<0?'neg':''}">${fmt0(fin)}</b></a>` : '';
+  const PF=month===cm?previstoFim():null, fin=saldoFinal(month), lp=livreProj(month), futVar=month>cm&&lp<s.livre-0.5;
+  const bigVal=PF?PF.hoje:fin, mesNome=MESES[+month.slice(5)-1];
+  const eyebrow=PF?`Saldo hoje · ${new Date().getDate()} de ${MESES[new Date().getMonth()]}`:month<cm?`Saldo no fim de ${labelLong(month)}`:`Saldo previsto · fim de ${labelLong(month)}`;
+  const saldoBox = PF ? `<a class="saldo" href="#historico"><span>Previsto para o fim do mês<br><span class="muted" style="font-size:12.5px">hoje ${fmt(PF.hoje)}${PF.inn>0.5?` + a receber ${fmt0(PF.inn)}`:''}${PF.out>0.5?` − a pagar ${fmt0(PF.out)}`:''} ›</span></span><b class="num ${PF.fim<0?'neg':''}">${fmt(PF.fim)}</b></a>`
+    : month>=st ? `<a class="saldo" href="#historico"><span>Sobra de ${mesNome}<br><span class="muted" style="font-size:12.5px">renda − gastos − guardado ›</span></span><b class="num ${lp<0?'neg':''}">${lp>=0?'+':''}${fmt0(lp)}</b></a>` : '';
   const B=baseline(month);
   const gastoDelta = B&&month<cm ? (s.gastos-(s.fixa+s.parc+B.var)) : null;
   const taxa = s.renda? (s.guardado+Math.max(0,s.livre))/s.renda : 0;
@@ -606,10 +646,10 @@ function vResumo(){
   const pRows=['p1','p2','casal'].map(q=>{const v=s.quem[q]||{fixa:0,parc:0,var:0};return {c:q,nome:PESSOAS[q],...v,t:v.fixa+v.parc+v.var};}).filter(r=>r.t>0.004);
   const hasLim=Object.values(S.cfg.limites||{}).some(v=>num(v)>0);
   return `<div class="stack">
-    <section class="card hero" data-tilt><div class="eyebrow">Sobra ${prev||month>cm?'prevista ':''}· ${esc(labelLong(month))}</div>
-      <div class="big ${s.livre<-0.5?'neg':''}" data-count="${Math.round(s.livre)}">${fmt0(s.livre)}</div>
-      <div class="heroSub">Renda <b class="num">${fmt0(s.renda)}</b>${prev?` (${fmt0(s.prevPend)} a receber)`:''} · gastos <b class="num">${fmt0(s.gastos)}</b> · guardado <b class="num">${fmt0(s.guardado)}</b></div>
-      ${strip}${futVar?`<p class="hint" style="margin:10px 0 0">Mês futuro: o saldo já desconta o gasto médio do dia a dia (${fmt0(planBase().var)}), que ainda não foi lançado.</p>`:''}${saldoBox}</section>
+    <section class="card hero" data-tilt><div class="eyebrow">${esc(eyebrow)}</div>
+      <div class="big ${bigVal<-0.005?'neg':''}" data-count="${bigVal.toFixed(2)}" data-dec="1">${fmt(bigVal)}</div>
+      <div class="heroSub">Em ${esc(mesNome)}: renda <b class="num">${fmt0(s.renda)}</b>${prev?` (${fmt0(s.prevPend)} a receber)`:''} · gastos <b class="num">${fmt0(s.gastos)}</b> · guardado <b class="num">${fmt0(s.guardado)}</b></div>
+      ${strip}${futVar?`<p class="hint" style="margin:10px 0 0">Mês futuro: já desconta o gasto médio do dia a dia (${fmt0(planBase().var)}), que ainda não foi lançado.</p>`:''}${saldoBox}</section>
     ${recebCard(s)}
     ${tiles}
     <section class="card"><h2>Plano do mês</h2><p class="lead">Regra 50/30/20: metade da renda para o essencial, até 30% para estilo de vida e pelo menos 20% guardado.</p>
@@ -761,7 +801,7 @@ function vMetas(){
     <button type="button" class="btn" data-act="new-meta" style="justify-self:start">Nova meta</button></div>`;
 }
 function vAjustes(){
-  const fs=fontes(), cm=curYM(), lims=Object.entries(S.cfg.limites||{}).filter(([,v])=>num(v)>0), sab=S.cfg.sabadoUtil!==false;
+  const fs=fontes(), cm=curYM(), lims=Object.entries(S.cfg.limites||{}).filter(([,v])=>num(v)>0), sab=S.cfg.sabadoUtil===true;
   const modeTxt = mode==='demo'?'Vocês estão vendo dados de exemplo. Nada é salvo.':mode==='db'?'Salvo no banco de dados online e sincronizado ao vivo entre os aparelhos.':'Salvo só neste navegador.';
   return `<div class="stack">
     <section class="card"><div class="ghead"><div><h2>Nomes</h2><p class="lead">Como cada um aparece no app.</p></div><button type="button" class="btn sm" data-act="edit-nomes">Editar</button></div>
@@ -769,10 +809,10 @@ function vAjustes(){
     <section class="card"><div class="ghead"><div><h2>Salários e datas</h2><p class="lead">Cada pagamento que cai todo mês e quando. No Resumo vocês confirmam o valor que realmente caiu.</p></div><button type="button" class="btn sm" data-act="new-fonte">Novo</button></div>
       <div class="list">${fs.length?fs.map(f=>`<button type="button" class="row" data-act="edit-fonte" data-id="${esc(f.id)}"><span class="main"><span class="t">${esc(PESSOAS[f.quem]||'')} · ${esc(f.nome)}</span><span class="s">${esc(whenTxt(f))} · em ${esc(labelShort(cm))} cai ${dm(payDate(f,cm))}</span></span><span class="v num">${fmt(num(f.valor))}</span></button>`).join(''):`<div class="empty">Ex.: ${esc(P1())} no 5º dia útil e no dia 20; ${esc(P2())} no 5º dia útil.</div>`}</div>
       <div class="sumline" style="margin-top:10px"><span class="muted">Previsto por mês</span><b class="num">${fmt(salTotal())}</b></div>
-      <div style="display:flex;justify-content:space-between;gap:12px;align-items:center;margin-top:14px;font-size:14px"><span>Sábado conta como dia útil<br><span class="muted" style="font-size:12.5px">É a regra da CLT para o 5º dia útil. Domingos e feriados nacionais não contam.</span></span><button type="button" class="pill" data-act="toggle-sab" aria-pressed="${sab}">${sab?'Sim':'Não'}</button></div>
+      <div style="display:flex;justify-content:space-between;gap:12px;align-items:center;margin-top:14px;font-size:14px"><span>Sábado conta como dia útil<br><span class="muted" style="font-size:12.5px">Deixe em “Não” se a empresa paga contando só de segunda a sexta. Domingos e feriados nacionais nunca contam.</span></span><button type="button" class="pill" data-act="toggle-sab" aria-pressed="${sab}">${sab?'Sim':'Não'}</button></div>
       <p class="hint" style="margin:10px 0 0">Pagamento em dia fixo que cai em fim de semana ou feriado aparece no dia útil anterior.</p></section>
-    <section class="card"><div class="ghead"><div><h2>Saldo acumulado</h2><p class="lead">A sobra de cada mês soma no saldo, e a falta desconta.</p></div><button type="button" class="btn sm" data-act="edit-saldo">Editar</button></div>
-      <div class="kv"><div>Controle desde</div><div style="text-transform:capitalize">${esc(labelLong(startMonth()))}</div><div>Saldo inicial</div><div class="num">${fmt(num(S.cfg.saldoInicial))}</div><div>Previsto no fim de ${esc(labelShort(cm))}</div><div class="num">${fmt0(saldoFinal(cm))}</div></div></section>
+    <section class="card"><div class="ghead"><div><h2>Saldo acumulado</h2><p class="lead">Parte do saldo que vocês informaram e soma tudo o que entra e sai depois dele.</p></div><button type="button" class="btn sm" data-act="edit-saldo">Editar</button></div>
+      <div class="kv"><div>Saldo informado${S.cfg.saldoData?` em ${dm(S.cfg.saldoData)}`:''}</div><div class="num">${fmt(num(S.cfg.saldoInicial))}</div><div>Saldo hoje</div><div class="num">${fmt(ledger(today()))}</div><div>Previsto no fim de ${esc(labelShort(cm))}</div><div class="num">${fmt(previstoFim().fim)}</div></div></section>
     <section class="card"><div class="ghead"><div><h2>Limites por categoria</h2><p class="lead">Teto mensal de gasto. O Resumo avisa aos 80% e quando estoura.</p></div><button type="button" class="btn sm" data-act="edit-lim">Editar</button></div>
       ${lims.length?`<div class="kv">${lims.map(([c,v])=>`<div>${esc(catName(c))}</div><div class="num">${fmt0(num(v))}</div>`).join('')}</div>`:`<p class="muted" style="margin:0">Nenhum limite ainda. Em “Editar” há um botão que sugere limites pelo histórico de vocês.</p>`}</section>
     <section class="card"><h2>Categorias</h2><p class="lead">Como cada categoria conta na regra 50/30/20.</p>
@@ -799,7 +839,7 @@ function countUp(root){
   root.querySelectorAll('[data-count]').forEach(el=>{
     const to=+el.dataset.count; if(!isFinite(to)||Math.abs(to)<1) return;
     const t0=performance.now(), dur=900;
-    const step=t=>{ const k=Math.min(1,(t-t0)/dur), e=1-Math.pow(1-k,3); el.textContent=fmt0(to*e); if(k<1&&el.isConnected) requestAnimationFrame(step); };
+    const step=t=>{ const k=Math.min(1,(t-t0)/dur), e=1-Math.pow(1-k,3); el.textContent=(el.dataset.dec?fmt:fmt0)(to*e); if(k<1&&el.isConnected) requestAnimationFrame(step); };
     requestAnimationFrame(step);
   });
 }
@@ -808,7 +848,7 @@ function render(){
   $('#mlabel').textContent=labelLong(month);
   $('#mnav').style.visibility=(view==='metas'||view==='ajustes')?'hidden':'visible';
   $('#ttl').textContent=TITLES[view]||'';
-  if(mode!=='loading'){ const cm=curYM(); $('#sfoot').innerHTML=`Saldo previsto no fim de ${esc(labelShort(cm))}<b class="num">${fmt0(saldoFinal(cm))}</b>`; }
+  if(mode!=='loading'){ const cm=curYM(); $('#sfoot').innerHTML=`Saldo hoje<b class="num">${fmt(ledger(today()))}</b>`; }
   document.querySelectorAll('[data-v]').forEach(a=>a.setAttribute('aria-current',a.dataset.v===view?'page':'false'));
   $('#banner').innerHTML=bannerHTML();
   $('#fab').hidden=!canWrite&&mode!=='demo';
@@ -971,7 +1011,7 @@ function recebForm(fid){
     <div class="hint">O que sobrar no mês soma no saldo acumulado.</div>`,
   async fd=>{
     const v=parseMoney(fd.get('valor')); if(!(v>0)) return 'Informe o valor recebido.';
-    const o={id:r?.id||(f.id+'_'+month),fonte:f.id,quem:f.quem,nome:f.nome,mes:month,valor:v,data:fd.get('data')||today()};
+    const o={id:r?.id||(f.id+'_'+month),fonte:f.id,quem:f.quem,nome:f.nome,mes:month,valor:v,data:fd.get('data')||today(),criado:r?.criado||Date.now()};
     const ok=await safe(()=>saveDoc('receb',o)); if(ok) toast(`${fmt0(v)} registrados.`); return ok;
   }, r?`<button type="button" class="btn danger" data-act="del-receb" data-id="${esc(r.id)}">Desfazer</button>`:'');
 }
@@ -983,13 +1023,15 @@ function nomesForm(){
   async fd=>{ const ok=await safe(()=>saveCfg({...S.cfg,nomes:{p1:(fd.get('p1')||'').trim(),p2:(fd.get('p2')||'').trim()}})); if(ok) toast('Nomes salvos.'); return ok; });
 }
 function saldoForm(){
-  openSheet('Saldo acumulado',`
-    <label>Mês em que começaram o controle<input name="inicio" type="month" value="${esc(startMonth())}"></label>
-    <label>Saldo em conta no começo desse mês (R$)<input name="saldo" inputmode="decimal" value="${money(num(S.cfg.saldoInicial))}" placeholder="0,00"></label>
-    <div class="hint">Não contem o dinheiro já separado para metas; ele aparece nas metas. Saldo negativo: use o sinal de menos.</div>`,
+  const dt=S.cfg.saldoData||today();
+  openSheet('Saldo em conta',`
+    <label>Quanto vocês têm na conta (R$)<input name="saldo" inputmode="decimal" value="${money(num(S.cfg.saldoInicial))}" placeholder="0,00"></label>
+    <label>Data desse saldo<input name="data" type="date" value="${esc(dt)}" max="${today()}"></label>
+    <div class="hint">Coloquem o saldo de agora. Daqui em diante, lancem só os gastos e recebimentos novos: o que aconteceu antes já está nesse valor. Não contem o dinheiro já separado para metas. Saldo negativo: use o sinal de menos.</div>`,
   async fd=>{
-    const v=parseMoney(fd.get('saldo'));
-    const ok=await safe(()=>saveCfg({...S.cfg,inicio:fd.get('inicio')||'',saldoInicial:isFinite(v)?v:0})); if(ok) toast('Saldo salvo.'); return ok;
+    const v=parseMoney(fd.get('saldo')), d=fd.get('data')||today(), agora=d===today();
+    const ok=await safe(()=>saveCfg({...S.cfg,saldoInicial:isFinite(v)?v:0,saldoData:d,saldoModo:agora?'agora':'fim',saldoEm:agora?Date.now():0,inicio:d.slice(0,7)}));
+    if(ok) toast('Saldo salvo.'); return ok;
   });
 }
 function limForm(){
@@ -1019,7 +1061,7 @@ const ACT={
   'edit-lim':()=>limForm(), 'edit-nomes':()=>nomesForm(),
   'new-fonte':()=>fonteForm(), 'edit-fonte':b=>{const f=fontes().find(x=>x.id===b.dataset.id); if(f) fonteForm(f);},
   receb:b=>recebForm(b.dataset.fonte), 'edit-saldo':()=>saldoForm(),
-  'toggle-sab':async()=>{ if(await safe(()=>saveCfg({...S.cfg,sabadoUtil:S.cfg.sabadoUtil===false}))) toast('Datas recalculadas.'); },
+  'toggle-sab':async()=>{ if(await safe(()=>saveCfg({...S.cfg,sabadoUtil:S.cfg.sabadoUtil!==true}))) toast('Datas recalculadas.'); },
   'go-month':b=>{month=b.dataset.m; render(); document.getElementById('pagamentos')?.scrollIntoView({behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth',block:'start'});},
   pay:async b=>{const col=b.dataset.kind==='fixa'?'fixas':'lanc'; const o=S[col].find(x=>x.id===b.dataset.id); if(!o) return; const pagas={...(o.pagas||{})}; if(pagas[month]) delete pagas[month]; else pagas[month]=paidDefault(month,col==='fixas'?num(o.dia):10); await safe(()=>saveDoc(col,{...o,pagas}));},
   'pay-fatura':async b=>{ b.disabled=true; const d=paidDefault(month,10); const xs=monthItems(month).filter(x=>x.t&&x.k!=='rec'&&x.t.forma==='credito'&&!x.t.pagas?.[month]); for(const x of xs){ if(!await safe(()=>saveDoc('lanc',{...x.t,pagas:{...(x.t.pagas||{}),[month]:d}}))) return; } toast(`Fatura de ${labelShort(month)} marcada como paga.`); },
