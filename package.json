@@ -1,0 +1,11 @@
+{
+  "name": "financas",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Controle financeiro do casal: gastos, contas, cartão parcelado, salários por data, saldo acumulado e metas.",
+  "scripts": {
+    "build": "node scripts/gerar-config.js",
+    "dev": "npx --yes serve public"
+  },
+  "license": "MIT"
+}

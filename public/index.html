@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Controle financeiro do casal: gastos, contas fixas, cartão parcelado, salários por data, saldo acumulado e metas com plano de economia.">
+<meta name="theme-color" content="#462446">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="manifest" href="manifest.webmanifest">
+<title>Finanças</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<div class="bg" aria-hidden="true"><i class="l1"></i><i class="l2"></i><i class="l3"></i><i class="veil"></i></div>
+
+<div class="login" id="login" hidden>
+  <div class="lcard">
+    <div class="coin" aria-hidden="true"><b style="transform:translateZ(-2px)"></b><b style="transform:translateZ(-1px)"></b><b></b><b style="transform:translateZ(1px)"></b><b style="transform:translateZ(2px)"></b><i class="fr">R$</i><i class="bk">F</i></div>
+    <h1>Finanças</h1>
+    <p class="muted">controle do casal</p>
+    <h2 id="loginTitle">Entrar</h2>
+    <form id="loginForm" class="f" novalidate></form>
+    <p id="loginMsg" role="alert"></p>
+  </div>
+</div>
+
+<aside class="side" id="side" aria-label="Menu principal">
+  <div class="sbrand"><div class="coin" aria-hidden="true"><b style="transform:translateZ(-2px)"></b><b style="transform:translateZ(-1px)"></b><b></b><b style="transform:translateZ(1px)"></b><b style="transform:translateZ(2px)"></b><i class="fr">R$</i><i class="bk">F</i></div><div><b>Finanças</b><small id="snames">controle do casal</small></div></div>
+  <nav class="snav">
+    <a href="#resumo" data-v="resumo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>Resumo</a>
+    <a href="#lancamentos" data-v="lancamentos"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>Lançamentos</a>
+    <a href="#contas" data-v="contas"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20M6 15h4"/></svg>Contas e cartão</a>
+    <a href="#historico" data-v="historico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5M12 7v5l3 2"/></svg>Histórico</a>
+    <a href="#metas" data-v="metas"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/></svg>Metas</a>
+    <a href="#ajustes" data-v="ajustes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></svg>Ajustes</a>
+  </nav>
+  <div class="sfoot" id="sfoot"></div>
+</aside>
+<div class="scrim" data-act="menu-close" aria-hidden="true"></div>
+
+<div class="app" id="app">
+  <header class="top"><div class="wrap">
+    <button type="button" class="menubtn" id="menubtn" data-act="menu" aria-label="Abrir menu" aria-expanded="false" aria-controls="side"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M4 7h16M4 12h11M4 17h16"/></svg></button>
+    <div class="ttl" id="ttl">Resumo</div>
+    <div class="mnav" id="mnav">
+      <button type="button" id="mprev" data-act="mprev" aria-label="Mês anterior">‹</button>
+      <span id="mlabel"></span>
+      <button type="button" id="mnext" data-act="mnext" aria-label="Próximo mês">›</button>
+    </div>
+  </div></header>
+  <div class="wrap"><div id="banner"></div></div>
+  <main class="wrap" id="view"></main>
+</div>
+
+<button type="button" class="fab" id="fab" data-act="new-lanc"><b>+</b> Lançar</button>
+
+<div class="sheet" id="sheet" hidden><div class="panel" role="dialog" aria-modal="true" aria-labelledby="sheetTitle" id="panel"></div></div>
+<div id="tip" role="tooltip" hidden></div>
+<div id="toast" role="status" aria-live="polite"></div>
+
+<script src="js/config.js"></script>
+<script src="js/vendor/supabase-2.118.0.min.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
