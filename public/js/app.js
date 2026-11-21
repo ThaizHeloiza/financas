@@ -117,7 +117,9 @@ function fontes(){
   if(num(s.p2)) out.push({id:'sal-p2',nome:'Salário',quem:'p2',quando:'5du',valor:num(s.p2)});
   return out;
 }
-function salTotal(){return fontes().reduce((a,f)=>a+num(f.valor),0);}
+/* valor esperado de um salário: o informado ou, se ficou em branco, a média dos últimos 3 que caíram */
+function fonteValor(f){ if(num(f.valor)>0) return num(f.valor); const r=S.receb.filter(x=>x.fonte===f.id).sort((a,b)=>b.mes.localeCompare(a.mes)).slice(0,3); return r.length?r.reduce((a,x)=>a+num(x.valor),0)/r.length:0; }
+function salTotal(){return fontes().reduce((a,f)=>a+fonteValor(f),0);}
 function startMonth(){
   if(memo.has('start')) return memo.get('start');
   let st=S.cfg.inicio||'';
@@ -130,7 +132,7 @@ function summary(m){
   const s={m,extra:0,fixa:0,parc:0,var:0,cat:{},quem:{},ess:0,est:0,items:it,rec:[],pend:[],late:[],recebido:0,prevPend:0};
   const fs=fontes(), st=startMonth();
   const cmS=curYM(), hojeS=today();
-  for(const f of fs){ const r=S.receb.find(x=>x.fonte===f.id&&x.mes===m); if(r){s.rec.push({f,r});s.recebido+=num(r.valor);} else if(m>=st){ const d=payDate(f,m); if(m>cmS||(m===cmS&&d>=hojeS)){s.pend.push(f);s.prevPend+=num(f.valor);} else s.late.push(f); } }
+  for(const f of fs){ const r=S.receb.find(x=>x.fonte===f.id&&x.mes===m); if(r){s.rec.push({f,r});s.recebido+=num(r.valor);} else if(m>=st){ const d=payDate(f,m); if(m>cmS||(m===cmS&&d>=hojeS)){s.pend.push(f);s.prevPend+=fonteValor(f);} else s.late.push(f); } }
   for(const r of S.receb) if(r.mes===m&&!fs.some(f=>f.id===r.fonte)){ s.rec.push({f:{id:r.fonte,nome:r.nome||'Salário',quem:r.quem||'casal'},r}); s.recebido+=num(r.valor); }
   for(const x of it){
     if(x.k==='rec'){s.extra+=x.v;continue;}
@@ -239,7 +241,7 @@ function pickCuts(list,gap){
   return out;
 }
 function splitBySalary(v){
-  const fs=fontes(), r=fs.filter(f=>f.quem==='p1').reduce((a,f)=>a+num(f.valor),0), t=fs.filter(f=>f.quem==='p2').reduce((a,f)=>a+num(f.valor),0), tot=r+t;
+  const fs=fontes(), r=fs.filter(f=>f.quem==='p1').reduce((a,f)=>a+fonteValor(f),0), t=fs.filter(f=>f.quem==='p2').reduce((a,f)=>a+fonteValor(f),0), tot=r+t;
   if(!tot) return null; return {p1:v*r/tot,p2:v*t/tot};
 }
 function planGoal(g){
@@ -668,9 +670,9 @@ function recebCard(s){
   if(month<startMonth()) return '';
   const row=f=>{
     const r=s.rec.find(o=>o.f.id===f.id)?.r, d=payDate(f,month);
-    if(r) return `<div class="row" style="cursor:default"><span class="check okbox" aria-hidden="true">✓</span><span class="main"><span class="t">${esc(PESSOAS[f.quem]||'')} · ${esc(f.nome)}</span><span class="s">Caiu em ${dm(r.data)}${Math.abs(num(r.valor)-num(f.valor))>=1?` · previsto ${fmt0(num(f.valor))}`:''}</span></span><button type="button" class="btn sm ghost num" data-act="receb" data-fonte="${esc(f.id)}" aria-label="Editar valor recebido">${fmt(num(r.valor))}</button></div>`;
+    if(r) return `<div class="row" style="cursor:default"><span class="check okbox" aria-hidden="true">✓</span><span class="main"><span class="t">${esc(PESSOAS[f.quem]||'')} · ${esc(f.nome)}</span><span class="s">Caiu em ${dm(r.data)}${Math.abs(num(r.valor)-fonteValor(f))>=1?` · previsto ${fmt0(fonteValor(f))}`:''}</span></span><button type="button" class="btn sm ghost num" data-act="receb" data-fonte="${esc(f.id)}" aria-label="Editar valor recebido">${fmt(num(r.valor))}</button></div>`;
     const late=s.late.includes(f), antes=late&&d<=saldoBase().d;
-    const sub=antes?`caiu ${dm(d)} · já está no saldo`:late?`${dm(d)} · não registrado`:`${esc(whenTxt(f))} · cai ${dm(d)} · previsto ${fmt0(num(f.valor))}`;
+    const sub=antes?`caiu ${dm(d)} · já está no saldo`:late?`${dm(d)} · não registrado`:`${esc(whenTxt(f))} · cai ${dm(d)} · ${fonteValor(f)?'previsto '+fmt0(fonteValor(f)):'valor a confirmar'}`;
     return `<div class="row" style="cursor:default"><span class="check" aria-hidden="true"></span><span class="main"><span class="t">${esc(PESSOAS[f.quem]||'')} · ${esc(f.nome)}</span><span class="s">${sub}</span></span>${late&&!antes?chip('warn','Não registrado'):''}<button type="button" class="btn sm ${antes?'ghost':''}" data-act="receb" data-fonte="${esc(f.id)}">Recebi</button></div>`;
   };
   return `<section class="card"><h2>Salários de ${esc(MESES[+month.slice(5)-1])}</h2><p class="lead">${(()=>{ const nxt=month===cm&&!s.pend.length?fs.map(f=>payDate(f,addM(cm,1))).sort()[0]:''; return `Recebido ${fmt0(s.recebido)}${s.prevPend>0.5?` · ainda vai cair ${fmt0(s.prevPend)}`:''}.${nxt?` Próximo salário: <b>${dm(nxt)}</b>.`:' Confirmem o valor que caiu em cada data.'}`; })()}</p>
@@ -880,7 +882,7 @@ function vAjustes(){
     <section class="card"><div class="ghead"><div><h2>Nomes</h2><p class="lead">Como cada um aparece no app.</p></div><button type="button" class="btn sm" data-act="edit-nomes">Editar</button></div>
       <div class="kv"><div>Pessoa 1</div><div>${esc(P1())}</div><div>Pessoa 2</div><div>${esc(P2())}</div></div></section>
     <section class="card"><div class="ghead"><div><h2>Salários e datas</h2><p class="lead">Cada pagamento que cai todo mês e quando. No Resumo vocês confirmam o valor que realmente caiu.</p></div><button type="button" class="btn sm" data-act="new-fonte">Novo</button></div>
-      <div class="list">${fs.length?fs.map(f=>`<button type="button" class="row" data-act="edit-fonte" data-id="${esc(f.id)}"><span class="main"><span class="t">${esc(PESSOAS[f.quem]||'')} · ${esc(f.nome)}</span><span class="s">${esc(whenTxt(f))} · em ${esc(labelShort(cm))} cai ${dm(payDate(f,cm))}</span></span><span class="v num">${fmt(num(f.valor))}</span></button>`).join(''):`<div class="empty">Ex.: ${esc(P1())} no 5º dia útil e no dia 20; ${esc(P2())} no 5º dia útil.</div>`}</div>
+      <div class="list">${fs.length?fs.map(f=>`<button type="button" class="row" data-act="edit-fonte" data-id="${esc(f.id)}"><span class="main"><span class="t">${esc(PESSOAS[f.quem]||'')} · ${esc(f.nome)}</span><span class="s">${esc(whenTxt(f))} · em ${esc(labelShort(cm))} cai ${dm(payDate(f,cm))}</span></span><span class="v num">${fmt(fonteValor(f))}</span></button>`).join(''):`<div class="empty">Ex.: ${esc(P1())} no 5º dia útil e no dia 20; ${esc(P2())} no 5º dia útil.</div>`}</div>
       <div class="sumline" style="margin-top:10px"><span class="muted">Previsto por mês</span><b class="num">${fmt(salTotal())}</b></div>
       <div style="display:flex;justify-content:space-between;gap:12px;align-items:center;margin-top:14px;font-size:14px"><span>Sábado conta como dia útil<br><span class="muted" style="font-size:12.5px">Deixe em “Não” se a empresa paga contando só de segunda a sexta. Domingos e feriados nacionais nunca contam.</span></span><button type="button" class="pill" data-act="toggle-sab" aria-pressed="${sab}">${sab?'Sim':'Não'}</button></div>
       <p class="hint" style="margin:10px 0 0">Pagamento em dia fixo que cai em fim de semana ou feriado aparece no dia útil anterior.</p></section>
@@ -1097,11 +1099,12 @@ function fonteForm(f){
   openSheet(isNew?'Novo salário / recebimento':'Editar recebimento',`
     <div class="two"><label>De quem<select name="quem">${opts({p1:P1(),p2:P2()},f.quem)}</select></label><label>Nome<input name="nome" value="${esc(f.nome)}" placeholder="Salário, Adiantamento…" autocomplete="off"></label></div>
     <div class="two"><label>Quando cai<select name="quando">${opts({'5du':'5º dia útil',dia:'Dia fixo do mês'},f.quando)}</select></label><label data-only="dia">Dia<input name="dia" type="number" min="1" max="31" inputmode="numeric" value="${esc(f.dia||20)}"></label></div>
-    <label>Valor previsto (R$)<input name="valor" inputmode="decimal" value="${money(f.valor)}" placeholder="0,00"></label>
+    <label>Valor aproximado (opcional)<input name="valor" inputmode="decimal" value="${num(f.valor)?money(f.valor):''}" placeholder="Deixe em branco se varia"></label>
+    <div class="hint">O valor de verdade vocês digitam todo mês ao tocar em “Recebi”. Este número só serve para a previsão; em branco, o app usa a média dos últimos meses.</div>
     <div class="hint" id="fo-prev"></div>`,
   async fd=>{
-    const v=parseMoney(fd.get('valor')); if(!(v>0)) return 'Informe o valor previsto.';
-    const o={id:f.id||newId(),nome:(fd.get('nome')||'').trim()||'Salário',quem:fd.get('quem'),quando:fd.get('quando'),dia:Math.min(31,Math.max(1,parseInt(fd.get('dia'))||20)),valor:v};
+    const v=parseMoney(fd.get('valor'));
+    const o={id:f.id||newId(),nome:(fd.get('nome')||'').trim()||'Salário',quem:fd.get('quem'),quando:fd.get('quando'),dia:Math.min(31,Math.max(1,parseInt(fd.get('dia'))||20)),valor:v>0?v:0};
     const list=fontes().filter(x=>x.id!==o.id).concat(o).sort((a,b)=>a.quem.localeCompare(b.quem)||(a.quando==='5du'?-1:1)-(b.quando==='5du'?-1:1));
     const ok=await safe(()=>saveCfg({...S.cfg,fontes:list})); if(ok) toast('Salário salvo.'); return ok;
   }, isNew?'':`<button type="button" class="btn danger" data-act="del-fonte" data-id="${esc(f.id)}">Excluir</button>`);
@@ -1116,8 +1119,8 @@ function recebForm(fid){
   const r=S.receb.find(x=>x.fonte===f.id&&x.mes===month), d=payDate(f,month);
   const last=S.receb.filter(x=>x.fonte===f.id&&x.mes<month).sort((a,b)=>b.mes.localeCompare(a.mes))[0];
   openSheet(`${PESSOAS[f.quem]||''} · ${f.nome}`,`
-    <div class="hint">${esc(labelLong(month))} · ${esc(whenTxt(f))}: cai em <b>${dm(d)}</b>. Previsto ${fmt(num(f.valor))}${last?` · mês passado caiu ${fmt(num(last.valor))}`:''}.</div>
-    <div class="two"><label>Valor que caiu (R$)<input name="valor" inputmode="decimal" value="${money(r?num(r.valor):num(f.valor))}"></label><label>Data<input name="data" type="date" value="${esc(r?.data||(d<=today()||month<curYM()?d:today()))}"></label></div>
+    <div class="hint">${esc(labelLong(month))} · ${esc(whenTxt(f))}: cai em <b>${dm(d)}</b>. ${fonteValor(f)?'Previsto '+fmt(fonteValor(f)):'Sem valor previsto'}${last?` · mês passado caiu ${fmt(num(last.valor))}`:''}.</div>
+    <div class="two"><label>Valor que caiu (R$)<input name="valor" inputmode="decimal" value="${r?money(num(r.valor)):''}" placeholder="Digite o valor que caiu"></label><label>Data<input name="data" type="date" value="${esc(r?.data||(d<=today()||month<curYM()?d:today()))}"></label></div>
     <div class="hint">O que sobrar no mês soma no saldo acumulado.</div>`,
   async fd=>{
     const v=parseMoney(fd.get('valor')); if(!(v>0)) return 'Informe o valor recebido.';
