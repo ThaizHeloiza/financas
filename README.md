@@ -17,6 +17,7 @@ Aplicativo web para um casal controlar juntos os gastos do mês, as contas fixas
 - **Salários por data**: cada pagamento é cadastrado com a data em que cai (5º dia útil ou dia fixo). Todo mês o casal confirma o valor que realmente caiu.
 - **Lançamentos**: Pix, débito, dinheiro, boleto e cartão de crédito à vista ou parcelado (até 24x), com escolha do mês da fatura. A categoria é sugerida pela descrição ou pelo último lançamento igual.
 - **Contas fixas e fatura do cartão**: marcar como pago, aviso de conta vencida, número de cada parcela ("5 de 10") e projeção do que já está comprometido nos próximos 12 meses.
+- **Vencimentos e lembretes**: todo gasto pode ser lançado como "Já pago" ou "A pagar" com data de vencimento. O app avisa 2 dias e 1 dia antes (e quando vence ou atrasa) e gera um arquivo de calendário (.ics) com alarmes para o celular.
 - **Histórico**: mês a mês com renda, gastos, guardado, sobra e saldo, mais o registro de tudo que foi pago e recebido.
 - **Plano do mês**: compara os gastos com a regra 50/30/20 e gera alertas (limite estourado, categoria que subiu muito, ritmo de gasto, parcelas comprometendo a renda, parcela que termina).
 - **Metas**: valor e data desejada. O app calcula quanto guardar por mês e por semana, divide entre os dois proporcionalmente aos salários e, se não couber, sugere em que categorias cortar e quanto, ou uma nova data possível. Também calcula a reserva de emergência ideal.

@@ -162,7 +162,8 @@ function ledger(upto){
     if(!t.data) continue;
     if(t.tipo==='receita'){ if(ok(t.data,t.criado)) v+=num(t.valor); continue; }
     if(t.forma==='credito'){ const n=Math.max(1,parseInt(t.parcelas)||1); for(const [m,p] of Object.entries(t.pagas||{})){ if(!p) continue; const d=typeof p==='string'&&p?p:m+'-10'; if(ok(d)) v-=num(t.valor)/n; } }
-    else if(ok(t.data,t.criado)) v-=num(t.valor);
+    else if(t.pago===undefined){ if(ok(t.data,t.criado)) v-=num(t.valor); }
+    else if(t.pago&&ok(t.pago,t.criado)) v-=num(t.valor);
   }
   for(const f of S.fixas) for(const [m,p] of Object.entries(f.pagas||{})){ if(!p) continue; const d=typeof p==='string'&&p?p:m+'-'+pad(Math.min(num(f.dia)||1,daysIn(m))); if(ok(d)) v-=num(f.valor); }
   for(const a of S.aportes){ const d=a.criado?ymd(new Date(num(a.criado))):(a.mes||'')+'-01'; if(ok(d,a.criado)) v-=num(a.valor); }
@@ -177,7 +178,7 @@ function previstoFim(){
     if(x.k==='rec'){ if(x.t.data>hoje) inn+=x.v; continue; }
     if(x.k==='fixa'){ if(x.f.pagas?.[cm]) continue; const due=cm+'-'+pad(Math.min(num(x.f.dia)||daysIn(cm),daysIn(cm))); if(due<B.d) continue; out+=x.v; }
     else if(x.t.forma==='credito'){ if(!x.t.pagas?.[cm]) out+=x.v; }
-    else if(x.t.data>hoje) out+=x.v;
+    else if(!isPaidLanc(x.t)) out+=x.v;
   }
   const h=ledger(hoje), r={hoje:h,inn,out,fim:h+inn-out}; memo.set('pf',r); return r;
 }
@@ -194,7 +195,8 @@ function itemPaid(x,m){
   if(x.k==='fixa'){const p=x.f.pagas?.[m]; return p?(typeof p==='string'?p:''):null;}
   if(x.k==='rec') return x.t.data;
   if(x.t.forma==='credito'){const p=x.t.pagas?.[m]; return p?(typeof p==='string'?p:''):null;}
-  return x.t.data;
+  if(x.t.pago===null) return null;
+  return x.t.pago||x.t.data;
 }
 /* média do "dia a dia" nos 3 meses anteriores com lançamentos */
 function baseline(m){
@@ -312,7 +314,7 @@ function writeErr(e){
 async function safe(fn){ try{ await fn(); return true; }catch(e){ console.warn(e); writeErr(e); return false; } }
 
 /* ---------- carregamento ---------- */
-function normCfg(d){ d=d||{}; return {fontes:Array.isArray(d.fontes)?d.fontes:[],salarios:{...(d.salarios||{})},sabadoUtil:d.sabadoUtil===true,saldoInicial:num(d.saldoInicial),saldoData:d.saldoData||'',saldoEm:num(d.saldoEm),saldoModo:d.saldoModo||'',inicio:d.inicio||'',nomes:{...(d.nomes||{})},limites:{...(d.limites||{})}}; }
+function normCfg(d){ d=d||{}; return {fontes:Array.isArray(d.fontes)?d.fontes:[],salarios:{...(d.salarios||{})},sabadoUtil:d.sabadoUtil===true,saldoInicial:num(d.saldoInicial),saldoData:d.saldoData||'',saldoEm:num(d.saldoEm),saldoModo:d.saldoModo||'',inicio:d.inicio||'',faturaDia:d.faturaDia||'',nomes:{...(d.nomes||{})},limites:{...(d.limites||{})}}; }
 async function init(){
   render();
   if(!HAS_CLOUD){ startLocal('Modo local: os dados ficam só neste navegador. Configure o Supabase (veja o README) para ter login e sincronizar entre aparelhos.'); return; }
@@ -560,8 +562,6 @@ function insights(s){
   if(!fontes().length) out.push(['warn','Cadastrem os salários e as datas em Ajustes para o app calcular sobra, saldo e metas.']);
   if(s.m===cm){
     const dH=new Date().getDate();
-    const venc=s.items.filter(x=>x.k==='fixa'&&!x.f.pagas?.[cm]&&num(x.f.dia)&&num(x.f.dia)<dH);
-    if(venc.length) out.push(['crit',`${venc.length===1?'1 conta fixa vencida':venc.length+' contas fixas vencidas'} sem marcar como paga: ${venc.slice(0,3).map(x=>x.f.nome).join(', ')} (${fmt0(venc.reduce((a,x)=>a+x.v,0))}).`]);
     const B0=saldoBase(), pend=s.late.filter(f=>payDate(f,cm)>B0.d);
     if(pend.length) out.push(['warn',`A data de ${pend.map(f=>`${f.nome.toLowerCase()} de ${PESSOAS[f.quem]}`).join(' e ')} já passou e o valor não foi registrado, então não entra no saldo. Se caiu, toquem em “Recebi”.`]);
   } else if(s.m<cm&&s.m>=startMonth()&&s.late.length) out.push(['warn',`Há salário não registrado em ${labelShort(s.m)}; ele não entrou no saldo daquele mês.`]);
@@ -593,6 +593,72 @@ function insights(s){
   }
   const ord={crit:0,serious:1,warn:2,good:3,info:4};
   return out.sort((a,b)=>ord[a[0]]-ord[b[0]]).slice(0,6);
+}
+
+/* ---------- vencimentos e lembretes ---------- */
+const isPaidLanc = t => t.pago===undefined ? t.data<=today() : !!t.pago;
+const daysBetween = (a,b) => Math.round((new Date(a+'T12:00:00')-new Date(b+'T12:00:00'))/864e5);
+function dueList(){
+  const key='due'; if(memo.has(key)) return memo.get(key);
+  const hoje=today(), cm=curYM(), B=saldoBase(), out=[], months=[addM(cm,-1),cm,addM(cm,1)];
+  for(const m of months) for(const f of S.fixas){
+    if(f.ativo===false||(f.inicio&&f.inicio>m)||(f.fim&&f.fim<m)||f.pagas?.[m]||f.forma==='credito') continue;
+    const due=m+'-'+pad(Math.min(num(f.dia)||daysIn(m),daysIn(m))); if(due<B.d) continue;
+    const n=daysBetween(due,hoje); if(n<=2&&n>=-45) out.push({kind:'fixa',id:f.id,m,nome:f.nome,v:num(f.valor),due,n});
+  }
+  for(const t of S.lanc){
+    if(t.tipo==='receita'||t.forma==='credito'||t.pago!==null||!t.data) continue;
+    const n=daysBetween(t.data,hoje); if(n<=2) out.push({kind:'lanc',id:t.id,m:t.data.slice(0,7),nome:t.desc,v:num(t.valor),due:t.data,n});
+  }
+  const fd=num(S.cfg.faturaDia);
+  if(fd) for(const m of months){
+    const xs=monthItems(m).filter(x=>x.t&&x.k!=='rec'&&x.t.forma==='credito'&&!x.t.pagas?.[m]); if(!xs.length) continue;
+    const due=m+'-'+pad(Math.min(fd,daysIn(m))); if(due<B.d) continue;
+    const n=daysBetween(due,hoje); if(n<=2&&n>=-45) out.push({kind:'fatura',id:'',m,nome:`Fatura do cartão (${labelShort(m)})`,v:xs.reduce((a,x)=>a+x.v,0),due,n});
+  }
+  out.sort((a,b)=>a.n-b.n); memo.set(key,out); return out;
+}
+function dueCard(){
+  const L=dueList(); if(!L.length) return '';
+  const lab=n=>n<0?['crit','Vencida']:n===0?['crit','Hoje']:n===1?['warn','Amanhã']:['warn','2 dias'];
+  const quando=n=>n<0?`venceu há ${-n} dia${n<-1?'s':''}`:n===0?'vence hoje':n===1?'vence amanhã':'vence em 2 dias';
+  const total=L.reduce((a,x)=>a+x.v,0);
+  return `<section class="card due"><div class="ghead"><div><h2>Vencimentos</h2><p class="lead">${L.length} conta${L.length>1?'s':''} vencendo nos próximos 2 dias ou já vencida${L.length>1?'s':''} · ${fmt(total)}. Toque no quadrado quando pagar.</p></div></div>
+    <div class="list">${L.map(it=>`<div class="row" style="cursor:default"><button type="button" class="check" data-act="pay-due" data-kind="${it.kind}" data-id="${esc(it.id)}" data-m="${it.m}" aria-label="Marcar como pago: ${esc(it.nome)}"></button><span class="main"><span class="t">${esc(it.nome)}</span><span class="s" style="display:flex;align-items:center;gap:6px;margin-top:3px">${chip(...lab(it.n))}<span>${dm(it.due)}</span></span></span><span class="v num">${fmt(it.v)}</span></div>`).join('')}</div></section>`;
+}
+function downloadFile(name,mime,text){
+  const blob=new Blob([text],{type:mime}); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=name; document.body.appendChild(a); a.click(); setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove();},800);
+}
+/* arquivo de calendário (.ics) com lembretes 2 dias e 1 dia antes, às 9h */
+function icsExport(){
+  const cm=curYM(), hoje=today(), stamp=new Date().toISOString().replace(/[-:]/g,'').slice(0,15)+'Z';
+  const e=s=>String(s).replace(/[\;,]/g,m=>'\\'+m).replace(/\n/g,'\\n');
+  const L=['BEGIN:VCALENDAR','VERSION:2.0','PRODID:-//Financas//Vencimentos//PT-BR','CALSCALE:GREGORIAN','METHOD:PUBLISH','X-WR-CALNAME:Finanças – vencimentos'];
+  const ev=(uid,date,titulo,rrule)=>{
+    L.push('BEGIN:VEVENT',`UID:${uid}@financas`,`DTSTAMP:${stamp}`,`DTSTART:${date.replace(/-/g,'')}T090000`,'DURATION:PT30M',`SUMMARY:${e(titulo)}`);
+    if(rrule) L.push(rrule);
+    for(const [d,txt] of [[2,'Vence em 2 dias'],[1,'Vence amanhã']]) L.push('BEGIN:VALARM','ACTION:DISPLAY',`DESCRIPTION:${e(txt+': '+titulo)}`,`TRIGGER:-P${d}D`,'END:VALARM');
+    L.push('END:VEVENT');
+  };
+  let n=0;
+  for(const f of S.fixas){
+    if(f.ativo===false||(f.fim&&f.fim<cm)||!num(f.dia)) continue;
+    const m0=f.inicio&&f.inicio>cm?f.inicio:cm, dia=num(f.dia);
+    const until=f.fim?`;UNTIL=${f.fim.replace('-','')}${pad(daysIn(f.fim))}T235959`:'';
+    ev('fixa-'+f.id, m0+'-'+pad(Math.min(dia,daysIn(m0))), `${f.nome} – ${fmt(num(f.valor))}`, `RRULE:FREQ=MONTHLY;BYMONTHDAY=${dia>28?-1:dia}${until}`); n++;
+  }
+  for(const t of S.lanc){ if(t.tipo==='receita'||t.forma==='credito'||t.pago!==null||!t.data||t.data<hoje) continue; ev('lanc-'+t.id,t.data,`${t.desc} – ${fmt(num(t.valor))}`); n++; }
+  const fd=num(S.cfg.faturaDia); if(fd){ ev('fatura',cm+'-'+pad(Math.min(fd,daysIn(cm))),'Fatura do cartão',`RRULE:FREQ=MONTHLY;BYMONTHDAY=${fd>28?-1:fd}`); n++; }
+  if(!n){ toast('Ainda não há contas com vencimento para colocar no calendário.'); return; }
+  L.push('END:VCALENDAR');
+  downloadFile('financas-vencimentos.ics','text/calendar;charset=utf-8',L.join('\r\n'));
+  toast(`${n} lembrete${n>1?'s':''} no arquivo. Abra o arquivo baixado para adicionar ao calendário.`);
+}
+function faturaForm(){
+  openSheet('Cartão de crédito',`
+    <label>Dia de vencimento da fatura<input name="dia" type="number" min="1" max="31" inputmode="numeric" value="${esc(S.cfg.faturaDia||'')}" placeholder="Ex.: 10"></label>
+    <div class="hint">Com isso, a fatura também entra nos Vencimentos e nos lembretes. Deixe em branco para não avisar.</div>`,
+  async fd=>{ const d=parseInt(fd.get('dia')); const ok=await safe(()=>saveCfg({...S.cfg,faturaDia:d>=1&&d<=31?d:''})); if(ok) toast('Vencimento da fatura salvo.'); return ok; });
 }
 
 /* ---------- telas ---------- */
@@ -646,6 +712,7 @@ function vResumo(){
   const pRows=['p1','p2','casal'].map(q=>{const v=s.quem[q]||{fixa:0,parc:0,var:0};return {c:q,nome:PESSOAS[q],...v,t:v.fixa+v.parc+v.var};}).filter(r=>r.t>0.004);
   const hasLim=Object.values(S.cfg.limites||{}).some(v=>num(v)>0);
   return `<div class="stack">
+    ${month===curYM()?dueCard():''}
     <section class="card hero" data-tilt><div class="eyebrow">${esc(eyebrow)}</div>
       <div class="big ${bigVal<-0.005?'neg':''}" data-count="${bigVal.toFixed(2)}" data-dec="1">${fmt(bigVal)}</div>
       <div class="heroSub">Em ${esc(mesNome)}: renda <b class="num">${fmt0(s.renda)}</b>${prev?` (${fmt0(s.prevPend)} a receber)`:''} · gastos <b class="num">${fmt0(s.gastos)}</b> · guardado <b class="num">${fmt0(s.guardado)}</b></div>
@@ -676,7 +743,7 @@ function vLanc(){
   const s=summary(month);
   const row=x=>{
     const t=x.t; const sub=[catName(x.cat),PESSOAS[x.quem]||'Casal',FORMAS[t.forma]||''].filter(Boolean).join(' · ');
-    return `<button type="button" class="row" data-act="edit-lanc" data-id="${esc(t.id)}"><span class="dot" style="background:${x.k==='rec'?'var(--good)':x.k==='parc'?'var(--s2)':'var(--s3)'}"></span><span class="main"><span class="t">${esc(t.desc)}${x.k==='parc'?`<span class="tag">${x.i+1}/${x.n}</span>`:''}</span><span class="s">${esc(sub)}</span></span><span class="v num ${x.k==='rec'?'in':''}">${x.k==='rec'?'+':''}${fmt(x.v)}</span></button>`;
+    return `<button type="button" class="row" data-act="edit-lanc" data-id="${esc(t.id)}"><span class="dot" style="background:${x.k==='rec'?'var(--good)':x.k==='parc'?'var(--s2)':'var(--s3)'}"></span><span class="main"><span class="t">${esc(t.desc)}${x.k==='parc'?`<span class="tag">${x.i+1}/${x.n}</span>`:''}${t.pago===null?`<span class="tag" style="color:var(--warn-ink)">a pagar · ${dm(t.data)}</span>`:''}</span><span class="s">${esc(sub)}</span></span><span class="v num ${x.k==='rec'?'in':''}">${x.k==='rec'?'+':''}${fmt(x.v)}</span></button>`;
   };
   const groups={}; for(const x of rest){(groups[x.t.data]||(groups[x.t.data]=[])).push(x);}
   const dayLabel=d=>{const [y,m,dd]=d.split('-').map(Number);return new Date(y,m-1,dd).toLocaleDateString('pt-BR',{weekday:'short',day:'numeric',month:'short'});};
@@ -698,7 +765,11 @@ function vContas(){
   const tot=fx.reduce((a,f)=>a+num(f.valor),0), pagas=fx.filter(f=>f.pagas?.[m]);
   const card=monthItems(m).filter(x=>x.t&&x.k!=='rec'&&x.t.forma==='credito').sort((a,b)=>(b.k==='parc')-(a.k==='parc')||b.v-a.v);
   const fat=card.reduce((a,x)=>a+x.v,0), fatPend=card.filter(x=>!x.t.pagas?.[m]);
-  const dH=new Date().getDate();
+  const dH=new Date().getDate(), fd=num(S.cfg.faturaDia);
+  const avul=monthItems(m).filter(x=>x.k==='var'&&x.t.forma!=='credito'&&x.t.pago!==undefined).sort((a,b)=>a.t.data.localeCompare(b.t.data));
+  const avRow=x=>{ const t=x.t, paid=!!t.pago, late=!paid&&t.data<today();
+    const sub=[`vence ${dm(t.data)}`, paid?'pago em '+dm(t.pago):catName(t.cat), FORMAS[t.forma]||'', PESSOAS[t.quem]||'Casal'].filter(Boolean).join(' · ');
+    return `<div class="row" style="cursor:default">${payBtn('lanc',t.id,paid,t.desc)}${mainBtn('edit-lanc',t.id,esc(t.desc),sub)}${late?chip('crit','Vencida'):''}<span class="v num">${fmt(x.v)}</span></div>`; };
   const fixRow=f=>{
     const p=f.pagas?.[m], paid=!!p, late=!paid&&((m===cm&&num(f.dia)&&num(f.dia)<dH)||m<cm);
     const sub=[f.dia?'vence dia '+f.dia:null, paid?paidTxt(p):catName(f.cat), PESSOAS[f.quem]||'Casal'].filter(Boolean).join(' · ');
@@ -715,7 +786,9 @@ function vContas(){
       <div class="sumline" style="margin-top:10px"><span class="muted">Total fixo por mês</span><b class="num">${fmt(tot)}</b></div>
       ${inactive.length?`<details style="margin-top:10px"><summary class="muted" style="cursor:pointer;font-size:13.5px">${inactive.length} fora deste mês (encerradas ou futuras)</summary><div class="list" style="margin-top:8px">${inactive.map(f=>`<button type="button" class="row" data-act="edit-fixa" data-id="${esc(f.id)}"><span class="main"><span class="t">${esc(f.nome)}</span><span class="s">${f.ativo===false?'Pausada':f.fim&&f.fim<m?'Encerrou em '+esc(labelShort(f.fim)):'Começa em '+esc(labelShort(f.inicio||m))}</span></span><span class="v num">${fmt(num(f.valor))}</span></button>`).join('')}</div></details>`:''}
     </section>
-    <section class="card"><div class="ghead"><div><h2>Fatura do cartão · ${esc(labelShort(m))}</h2><p class="lead">Parcelas e compras à vista no crédito que caem nesta fatura. Para lançar uma nova, use <b>+ Lançar</b>.</p></div></div>
+    <section class="card"><div class="ghead"><div><h2>Contas a pagar avulsas</h2><p class="lead">Boletos e contas de uma vez só, lançados como “A pagar”. Toquem no quadrado quando pagarem.</p></div></div>
+      <div class="list">${avul.length?avul.map(avRow).join(''):`<div class="empty">Nenhuma conta avulsa agendada em ${esc(labelShort(m))}. Ao lançar, escolha “A pagar” e a data de vencimento.</div>`}</div></section>
+    <section class="card"><div class="ghead"><div><h2>Fatura do cartão · ${esc(labelShort(m))}</h2><p class="lead">${fd?`Vence dia ${fd}. `:''}Parcelas e compras à vista no crédito que caem nesta fatura. ${fd?'':'Cadastre o dia de vencimento para receber aviso.'}</p></div><button type="button" class="btn sm ghost" data-act="edit-fatura">${fd?'Vencimento':'Definir vencimento'}</button></div>
       <div class="list">${card.length?card.map(cardRow).join(''):`<div class="empty">Nada no cartão neste mês.</div>`}</div>
       <div class="sumline" style="margin-top:10px"><span class="muted">Total da fatura</span><b class="num">${fmt(fat)}</b></div>
       ${card.length?(fatPend.length?`<div class="btns"><button type="button" class="btn" data-act="pay-fatura">Marcar fatura inteira como paga</button></div>`:`<div style="margin-top:10px">${chip('good','Fatura paga')}</div>`):''}
@@ -735,7 +808,7 @@ function vHist(){
   const pend=all.filter(o=>o.p===null).sort((a,b)=>ord(a.x)-ord(b.x)||num(a.x.f?.dia)-num(b.x.f?.dia)||(a.x.t?.data||'').localeCompare(b.x.t?.data||''));
   const tot=a=>a.reduce((v,o)=>v+o.x.v,0);
   const prow=(o,pending)=>{
-    const x=o.x, isF=x.k==='fixa', id=isF?x.f.id:x.t.id, title=isF?x.f.nome:x.t.desc, toggle=isF||x.t.forma==='credito';
+    const x=o.x, isF=x.k==='fixa', id=isF?x.f.id:x.t.id, title=isF?x.f.nome:x.t.desc, toggle=true;
     const sub=[x.k==='parc'?`parcela ${x.i+1} de ${x.n}`:null, pending?(isF&&x.f.dia?'vence dia '+x.f.dia:'a pagar'):(o.p?'pago em '+dm(o.p):'pago'), isF?'conta fixa':(FORMAS[x.t.forma]||''), PESSOAS[x.quem]||'Casal'].filter(Boolean).join(' · ');
     const box = toggle ? payBtn(isF?'fixa':'lanc',id,!pending,title) : `<span class="check okbox" aria-hidden="true">✓</span>`;
     return `<div class="row" style="cursor:default">${box}<span class="main"><span class="t">${esc(title)}${x.k==='parc'?`<span class="tag">${x.i+1}/${x.n}</span>`:''}</span><span class="s">${esc(sub)}</span></span><span class="v num">${fmt(x.v)}</span></div>`;
@@ -813,6 +886,10 @@ function vAjustes(){
       <p class="hint" style="margin:10px 0 0">Pagamento em dia fixo que cai em fim de semana ou feriado aparece no dia útil anterior.</p></section>
     <section class="card"><div class="ghead"><div><h2>Saldo acumulado</h2><p class="lead">Parte do saldo que vocês informaram e soma tudo o que entra e sai depois dele.</p></div><button type="button" class="btn sm" data-act="edit-saldo">Editar</button></div>
       <div class="kv"><div>Saldo informado${S.cfg.saldoData?` em ${dm(S.cfg.saldoData)}`:''}</div><div class="num">${fmt(num(S.cfg.saldoInicial))}</div><div>Saldo hoje</div><div class="num">${fmt(ledger(today()))}</div><div>Previsto no fim de ${esc(labelShort(cm))}</div><div class="num">${fmt(previstoFim().fim)}</div></div></section>
+    <section class="card"><div class="ghead"><div><h2>Vencimentos e lembretes</h2><p class="lead">O Resumo avisa 2 dias e 1 dia antes de cada vencimento. Para receber o aviso no celular mesmo com o app fechado, baixe os lembretes e adicione ao calendário.</p></div></div>
+      <div class="kv"><div>Vencimento da fatura do cartão</div><div>${num(S.cfg.faturaDia)?'dia '+num(S.cfg.faturaDia):'não definido'}</div></div>
+      <div class="btns"><button type="button" class="btn" data-act="ics">Baixar lembretes para o calendário</button><button type="button" class="btn ghost" data-act="edit-fatura">Vencimento do cartão</button></div>
+      <p class="hint" style="margin:10px 0 0">O arquivo traz as contas fixas (repetindo todo mês), as contas avulsas a pagar e a fatura, com alarme às 9h dois dias e um dia antes. Se mudar uma conta, baixe de novo.</p></section>
     <section class="card"><div class="ghead"><div><h2>Limites por categoria</h2><p class="lead">Teto mensal de gasto. O Resumo avisa aos 80% e quando estoura.</p></div><button type="button" class="btn sm" data-act="edit-lim">Editar</button></div>
       ${lims.length?`<div class="kv">${lims.map(([c,v])=>`<div>${esc(catName(c))}</div><div class="num">${fmt0(num(v))}</div>`).join('')}</div>`:`<p class="muted" style="margin:0">Nenhum limite ainda. Em “Editar” há um botão que sugere limites pelo histórico de vocês.</p>`}</section>
     <section class="card"><h2>Categorias</h2><p class="lead">Como cada categoria conta na regra 50/30/20.</p>
@@ -848,6 +925,7 @@ function render(){
   $('#mlabel').textContent=labelLong(month);
   $('#mnav').style.visibility=(view==='metas'||view==='ajustes')?'hidden':'visible';
   $('#ttl').textContent=TITLES[view]||'';
+  if(mode!=='loading'){ const nd=dueList().length, a=document.querySelector('.snav a[data-v="contas"]'); if(a){ let bd=a.querySelector('.nbadge'); if(nd){ if(!bd){bd=document.createElement('span');bd.className='nbadge';a.appendChild(bd);} bd.textContent=nd; } else if(bd) bd.remove(); } $('#menubtn').classList.toggle('hasdue',nd>0); }
   if(mode!=='loading'){ const cm=curYM(); $('#sfoot').innerHTML=`Saldo hoje<b class="num">${fmt(ledger(today()))}</b>`; }
   document.querySelectorAll('[data-v]').forEach(a=>a.setAttribute('aria-current',a.dataset.v===view?'page':'false'));
   $('#banner').innerHTML=bannerHTML();
@@ -876,68 +954,74 @@ const money=v=>v||v===0?brl2.format(v):'';
 
 function lancForm(t){
   const isNew=!t; t=t||{tipo:'despesa',forma:'pix',quem:'casal',cat:'',parcelas:1,data:month===curYM()?today():month+'-01'};
-  const n=parseInt(t.parcelas)||1, freq0=n>1?'parc':'unica', d0=t.data||today(), fat0=esc(t.mesFatura||d0.slice(0,7));
+  const n=parseInt(t.parcelas)||1, freq0=n>1?'parc':'unica', d0=t.data||today(), fat0=esc(t.mesFatura||d0.slice(0,7)), situ0=t.pago===null?'apagar':'pago';
   const body=`
     <div class="seg2" role="radiogroup" aria-label="Tipo"><label><input type="radio" name="tipo" value="despesa" ${t.tipo!=='receita'?'checked':''}>Gasto</label><label><input type="radio" name="tipo" value="receita" ${t.tipo==='receita'?'checked':''}>Entrada extra</label></div>
-    <label>Descrição<input id="f-desc" name="desc" value="${esc(t.desc||'')}" placeholder="Ex.: Mercado, iFood, Academia" autocomplete="off"></label>
+    <label>Descrição<input id="f-desc" name="desc" value="${esc(t.desc||'')}" placeholder="Ex.: Mercado, Luz, Academia" autocomplete="off"></label>
     <div class="hint" id="f-guess"></div>
     <div class="two"><label>Valor (R$)<input id="f-valor" name="valor" inputmode="decimal" value="${money(n>1&&!isNew?num(t.valor)/n:t.valor)}" placeholder="0,00"></label><label>Data<input id="f-data" name="data" type="date" value="${esc(d0)}"></label></div>
     <div class="two" data-only="despesa"><label>Categoria<select id="f-cat" name="cat">${catOpts(t.cat||'outros')}</select></label><label>Quem<select id="f-quem" name="quem">${opts(PESSOAS,t.quem||'casal')}</select></label></div>
     <div data-only="receita" hidden><label>De quem<select id="f-quemr" name="quemr">${opts(PESSOAS,t.quem||'casal')}</select></label></div>
     <div class="two" data-only="despesa"><label>Forma de pagamento<select id="f-forma" name="forma">${opts(FORMAS,t.forma||'pix')}</select></label><label>Como se repete<select id="f-freq" name="freq">${opts({unica:'Só esta vez',parc:'Parcelado',fixa:'Fixo todo mês'},freq0)}</select></label></div>
+    <div data-only="situ"><div class="seg2" role="radiogroup" aria-label="Situação"><label><input type="radio" name="situ" value="pago" ${situ0==='pago'?'checked':''}>Já pago</label><label><input type="radio" name="situ" value="apagar" ${situ0==='apagar'?'checked':''}>A pagar</label></div></div>
     <div class="two" data-only="parc"><label>Parcelas<select id="f-parc" name="parcelas">${[...Array(23)].map((_,i)=>`<option value="${i+2}" ${i+2===n?'selected':''}>${i+2}x</option>`).join('')}</select></label><label>1ª fatura em<input id="f-fat" name="mesFatura" type="month" value="${fat0}"></label></div>
     <label data-only="fatura">Entra na fatura de<input id="f-fat1" name="mesFatura1" type="month" value="${fat0}"></label>
-    <label data-only="fixa">Dia do vencimento<input id="f-dia" name="dia" type="number" min="1" max="31" inputmode="numeric" value="${+d0.slice(8,10)}"></label>
     <div class="hint" id="f-parc-hint"></div>
     ${!isNew&&n>1&&t.forma==='credito'?parcTimeline(t):''}`;
   const del = isNew?'':`<button type="button" class="btn danger" data-act="del-lanc" data-id="${esc(t.id)}">Excluir</button>`;
   openSheet(isNew?'Novo lançamento':'Editar lançamento',body,async fd=>{
     const tipo=fd.get('tipo'), freq=tipo==='despesa'?fd.get('freq'):'unica', forma=tipo==='receita'?'pix':fd.get('forma');
+    const situ=tipo==='despesa'&&forma!=='credito'?fd.get('situ'):'pago';
     const v=parseMoney(fd.get('valor')); if(!(v>0)) return 'Informe um valor maior que zero.';
-    const data=fd.get('data')||today();
+    const data=fd.get('data')||today(), hoje=today(), pagoEm=data<=hoje?data:hoje;
     const cat=tipo==='receita'?'renda':fd.get('cat');
     const desc=(fd.get('desc')||'').trim()||catName(cat);
     if(freq==='fixa'){
-      const dia=Math.min(31,Math.max(1,parseInt(fd.get('dia'))||+data.slice(8,10))), m0=data.slice(0,7), pagas={};
-      if(forma!=='credito'&&data<=today()) pagas[m0]=data;
+      const dia=+data.slice(8,10), m0=data.slice(0,7), pagas={};
+      if(situ==='pago'&&forma!=='credito') pagas[m0]=pagoEm;
       const f={nome:desc,valor:v,cat,quem:fd.get('quem'),dia,inicio:m0,fim:'',ativo:true,forma,pagas,criado:Date.now()};
       let ok=await safe(()=>saveDoc('fixas',f));
       if(ok&&!isNew) ok=await safe(()=>delDoc('lanc',t.id));
-      if(ok) toast(`Conta fixa criada: entra todo mês, vence dia ${dia}. Fica em Contas.`);
+      if(ok) toast(`Conta fixa criada: vence todo dia ${dia}.${situ==='apagar'?' Você será avisado 2 dias e 1 dia antes.':''}`);
       return ok;
     }
     const parcelas=freq==='parc'?(parseInt(fd.get('parcelas'))||2):1;
     const mesFatura=forma==='credito'?((freq==='parc'?fd.get('mesFatura'):fd.get('mesFatura1'))||data.slice(0,7)):data.slice(0,7);
     const o={...(isNew?{}:t),tipo,desc,valor:Math.round(v*parcelas*100)/100,data,cat,
       quem:tipo==='receita'?fd.get('quemr'):fd.get('quem'),forma,parcelas,mesFatura};
+    if(tipo==='despesa'&&forma!=='credito') o.pago = situ==='pago' ? (t.pago&&!isNew?t.pago:pagoEm) : null; else delete o.pago;
     if(isNew) o.criado=Date.now();
     const ok=await safe(()=>saveDoc('lanc',o));
-    if(ok){ toast(isNew?'Lançado.':'Lançamento atualizado.'); if(isNew&&data.slice(0,7)!==month&&parcelas===1) toast(`Lançado em ${labelLong(data.slice(0,7))}.`); }
+    if(ok){ toast(o.pago===null?`Agendado: vence ${dm(data)}. Aviso 2 dias e 1 dia antes.`:isNew?'Lançado.':'Lançamento atualizado.'); }
     return ok;
   },del);
-  const form=$('#sheetForm'); let catTouched=!isNew;
+  const form=$('#sheetForm'); let catTouched=!isNew, situTouched=!isNew;
   const sync=()=>{
     const tipo=form.querySelector('[name=tipo]:checked').value, forma=form.forma.value, freq=form.freq.value, desp=tipo==='despesa';
-    const vis={despesa:desp,receita:!desp,parc:desp&&freq==='parc',fatura:desp&&freq==='unica'&&forma==='credito',fixa:desp&&freq==='fixa'};
+    const situ=form.querySelector('[name=situ]:checked').value;
+    const vis={despesa:desp,receita:!desp,situ:desp&&forma!=='credito'&&freq!=='parc',parc:desp&&freq==='parc',fatura:desp&&freq==='unica'&&forma==='credito'};
     form.querySelectorAll('[data-only]').forEach(el=>{el.hidden=!vis[el.dataset.only];});
     const n=parseInt(form.parcelas.value)||2, v=parseMoney(form.valor.value), data=form.data.value||today(), h=$('#f-parc-hint');
     let txt='';
     if(vis.parc&&v>0) txt=`Valor da <b>parcela</b>. Total: <b>${fmt(v*n)}</b> em ${n}x, de ${esc(labelShort(form.mesFatura.value||month))} a ${esc(labelShort(addM(form.mesFatura.value||month,n-1)))}.`;
-    else if(vis.fatura) txt='À vista no cartão: entra na fatura escolhida.';
-    else if(vis.fixa) txt=`Vai para <b>Contas fixas</b> e entra todo mês a partir de ${esc(labelShort(data.slice(0,7)))}, vencendo no dia ${esc(form.dia.value||'—')}.${forma!=='credito'&&data<=today()?' Este mês já fica marcado como pago.':''}`;
+    else if(vis.fatura) txt='No cartão: entra na fatura escolhida e é paga junto com ela.';
+    else if(desp&&freq==='fixa') txt=`Vai para <b>Contas fixas</b> e vence todo dia <b>${+data.slice(8,10)||'—'}</b>, a partir de ${esc(labelShort(data.slice(0,7)))}.${forma==='credito'?'':situ==='pago'?' Este mês fica como pago.':' Este mês fica a pagar.'} Aviso 2 dias e 1 dia antes de cada vencimento.`;
+    else if(vis.situ&&situ==='apagar') txt='Fica em <b>Vencimentos</b> e você recebe aviso 2 dias e 1 dia antes. Quando pagar, toque no quadrado para marcar.';
     h.innerHTML=txt;
-    form.valor.closest('label').firstChild.textContent = vis.parc?'Valor da parcela (R$)':vis.fixa?'Valor por mês (R$)':'Valor (R$)';
+    form.valor.closest('label').firstChild.textContent = vis.parc?'Valor da parcela (R$)':(desp&&freq==='fixa')?'Valor por mês (R$)':'Valor (R$)';
+    form.data.closest('label').firstChild.textContent = !desp?'Data':(desp&&freq==='fixa')?'1º vencimento':vis.situ?(situ==='apagar'?'Vencimento':'Data do pagamento'):'Data da compra';
   };
   form.addEventListener('change',e=>{
     const nm=e.target.name;
     if(nm==='cat') catTouched=true;
+    if(nm==='situ') situTouched=true;
     if(nm==='freq'&&e.target.value==='parc') form.forma.value='credito';
     if(nm==='forma'&&e.target.value!=='credito'&&form.freq.value==='parc') form.freq.value='unica';
-    if(nm==='data'&&isNew){ const d=e.target.value; form.mesFatura.value=d.slice(0,7); form.mesFatura1.value=d.slice(0,7); form.dia.value=+d.slice(8,10)||form.dia.value; }
+    if(nm==='data'){ const d=e.target.value; if(isNew){ form.mesFatura.value=d.slice(0,7); form.mesFatura1.value=d.slice(0,7); } if(!situTouched) form.querySelector(`[name=situ][value=${d>today()?'apagar':'pago'}]`).checked=true; }
     sync();
   });
   form.addEventListener('input',e=>{
-    if(e.target.name==='valor'||e.target.name==='dia') sync();
+    if(e.target.name==='valor') sync();
     if(e.target.name==='desc'&&!catTouched){
       const d=e.target.value.trim().toLowerCase(); if(d.length<3){$('#f-guess').textContent='';return;}
       const prev=[...S.lanc].reverse().find(x=>x.tipo!=='receita'&&(x.desc||'').toLowerCase()===d);
@@ -1084,12 +1168,19 @@ const ACT={
   download:()=>downloadBackup(), import:()=>importForm(),
   logout:async()=>{ await sb?.auth.signOut(); },
   forgot:()=>forgotPassword(),
-  'edit-lim':()=>limForm(), 'edit-nomes':()=>nomesForm(),
+  'edit-lim':()=>limForm(), 'edit-fatura':()=>faturaForm(), ics:()=>icsExport(),
+  'pay-due':async b=>{ const m=b.dataset.m, k=b.dataset.kind, d=today(); b.disabled=true;
+    if(k==='fixa'){ const f=S.fixas.find(x=>x.id===b.dataset.id); if(f) await safe(()=>saveDoc('fixas',{...f,pagas:{...(f.pagas||{}),[m]:d}})); }
+    else if(k==='lanc'){ const t=S.lanc.find(x=>x.id===b.dataset.id); if(t) await safe(()=>saveDoc('lanc',{...t,pago:d})); }
+    else { for(const x of monthItems(m).filter(x=>x.t&&x.k!=='rec'&&x.t.forma==='credito'&&!x.t.pagas?.[m])) if(!await safe(()=>saveDoc('lanc',{...x.t,pagas:{...(x.t.pagas||{}),[m]:d}}))) return; }
+    toast('Pagamento registrado.'); }, 'edit-nomes':()=>nomesForm(),
   'new-fonte':()=>fonteForm(), 'edit-fonte':b=>{const f=fontes().find(x=>x.id===b.dataset.id); if(f) fonteForm(f);},
   receb:b=>recebForm(b.dataset.fonte), 'edit-saldo':()=>saldoForm(),
   'toggle-sab':async()=>{ if(await safe(()=>saveCfg({...S.cfg,sabadoUtil:S.cfg.sabadoUtil!==true}))) toast('Datas recalculadas.'); },
   'go-month':b=>{month=b.dataset.m; render(); document.getElementById('pagamentos')?.scrollIntoView({behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth',block:'start'});},
-  pay:async b=>{const col=b.dataset.kind==='fixa'?'fixas':'lanc'; const o=S[col].find(x=>x.id===b.dataset.id); if(!o) return; const pagas={...(o.pagas||{})}; if(pagas[month]) delete pagas[month]; else pagas[month]=paidDefault(month,col==='fixas'?num(o.dia):10); await safe(()=>saveDoc(col,{...o,pagas}));},
+  pay:async b=>{const col=b.dataset.kind==='fixa'?'fixas':'lanc'; const o=S[col].find(x=>x.id===b.dataset.id); if(!o) return;
+    if(col==='lanc'&&o.forma!=='credito'){ await safe(()=>saveDoc('lanc',{...o,pago:isPaidLanc(o)?null:(o.data<today()&&month<curYM()?o.data:today())})); return; }
+    const pagas={...(o.pagas||{})}; if(pagas[month]) delete pagas[month]; else pagas[month]=paidDefault(month,col==='fixas'?num(o.dia):10); await safe(()=>saveDoc(col,{...o,pagas}));},
   'pay-fatura':async b=>{ b.disabled=true; const d=paidDefault(month,10); const xs=monthItems(month).filter(x=>x.t&&x.k!=='rec'&&x.t.forma==='credito'&&!x.t.pagas?.[month]); for(const x of xs){ if(!await safe(()=>saveDoc('lanc',{...x.t,pagas:{...(x.t.pagas||{}),[month]:d}}))) return; } toast(`Fatura de ${labelShort(month)} marcada como paga.`); },
   'del-receb':async b=>{ if(b.dataset.sure!=='1'){b.dataset.sure='1';b.textContent='Toque de novo para desfazer';return;} if(await safe(()=>delDoc('receb',b.dataset.id))){closeSheet();toast('Recebimento desfeito.');} },
   'del-fonte':async b=>{ if(b.dataset.sure!=='1'){b.dataset.sure='1';b.textContent='Toque de novo para excluir';return;} const list=fontes().filter(x=>x.id!==b.dataset.id); if(await safe(()=>saveCfg({...S.cfg,fontes:list,salarios:{}}))){closeSheet();toast('Excluído. Os valores já recebidos continuam no histórico.');} },
